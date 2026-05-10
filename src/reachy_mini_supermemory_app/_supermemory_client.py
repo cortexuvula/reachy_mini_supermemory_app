@@ -9,7 +9,8 @@ from __future__ import annotations
 import logging
 import os
 import re
-from typing import Any
+import time
+from typing import Any, Dict, List, Set
 
 import httpx
 
@@ -18,6 +19,14 @@ logger = logging.getLogger(__name__)
 DEFAULT_BASE_URL = "https://api.supermemory.ai"
 REQUEST_TIMEOUT_S = 10.0
 CONTAINER_TAG_RE = re.compile(r"[^A-Za-z0-9_:-]+")
+
+RECALL_TAGS_ENV = "SUPERMEMORY_RECALL_CONTAINER_TAGS"
+RECALL_EXCLUDED_TAGS_ENV = "SUPERMEMORY_RECALL_EXCLUDED_TAGS"
+DISCOVERY_PAGE_SIZE = 100
+DISCOVERY_MAX_PAGES = 10
+TAG_CACHE_TTL_S = 600.0
+
+_tag_cache: Dict[str, Any] = {"tags": None, "expires_at": 0.0}
 
 
 class SupermemoryConfigError(RuntimeError):
@@ -109,3 +118,71 @@ async def post_json(path: str, body: dict[str, Any]) -> dict[str, Any]:
 def is_configured() -> bool:
     """Return True when SUPERMEMORY_API_KEY is set."""
     return bool((os.environ.get("SUPERMEMORY_API_KEY") or "").strip())
+
+
+def _parse_csv_env(env_var: str) -> List[str]:
+    raw = (os.environ.get(env_var) or "").strip()
+    if not raw:
+        return []
+    return [t.strip() for t in raw.split(",") if t.strip()]
+
+
+def recall_pinned_tags() -> List[str]:
+    """Return the explicit pin list from ``SUPERMEMORY_RECALL_CONTAINER_TAGS``."""
+    return _parse_csv_env(RECALL_TAGS_ENV)
+
+
+def recall_excluded_tags() -> List[str]:
+    """Return the exclusion list from ``SUPERMEMORY_RECALL_EXCLUDED_TAGS``."""
+    return _parse_csv_env(RECALL_EXCLUDED_TAGS_ENV)
+
+
+async def discover_container_tags() -> List[str]:
+    """Enumerate distinct containerTags by paginating ``/v3/documents/list``.
+
+    Cached for ``TAG_CACHE_TTL_S`` seconds. Bounded by ``DISCOVERY_MAX_PAGES`` so
+    cold-call latency stays predictable on accounts with very large document
+    counts. Tags in older pages may be missed; callers can override via
+    ``SUPERMEMORY_RECALL_CONTAINER_TAGS``.
+    """
+    now = time.monotonic()
+    cached = _tag_cache.get("tags")
+    if cached and now < float(_tag_cache.get("expires_at", 0.0)):
+        return list(cached)
+
+    seen: Set[str] = set()
+    for page in range(1, DISCOVERY_MAX_PAGES + 1):
+        payload = await post_json("/v3/documents/list", {"limit": DISCOVERY_PAGE_SIZE, "page": page})
+        if "error" in payload:
+            logger.warning("Tag discovery aborted on page %d: %s", page, payload.get("error"))
+            break
+        memories = payload.get("memories") or []
+        if not memories:
+            break
+        for m in memories:
+            if not isinstance(m, dict):
+                continue
+            for tag in m.get("containerTags") or []:
+                if isinstance(tag, str) and tag.strip():
+                    seen.add(tag.strip())
+        pagination = payload.get("pagination") or {}
+        total_pages = pagination.get("totalPages")
+        if isinstance(total_pages, int) and page >= total_pages:
+            break
+
+    discovered = sorted(seen)
+    if discovered:
+        _tag_cache["tags"] = discovered
+        _tag_cache["expires_at"] = now + TAG_CACHE_TTL_S
+        logger.info("Discovered %d containerTags: %s", len(discovered), discovered)
+    return discovered
+
+
+def invalidate_tag_cache() -> None:
+    """Drop the cached tag list so the next ``discover_container_tags`` call refetches."""
+    _tag_cache["tags"] = None
+    _tag_cache["expires_at"] = 0.0
+
+
+def _reset_tag_cache_for_tests() -> None:
+    invalidate_tag_cache()

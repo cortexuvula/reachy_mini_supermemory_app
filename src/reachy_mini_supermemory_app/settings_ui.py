@@ -11,7 +11,14 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from ._supermemory_client import is_configured
+from ._supermemory_client import (
+    RECALL_EXCLUDED_TAGS_ENV,
+    discover_container_tags,
+    invalidate_tag_cache,
+    is_configured,
+    recall_excluded_tags,
+    recall_pinned_tags,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +73,9 @@ def mount_supermemory_routes(app: object, instance_path: Optional[str] = None) -
     class ApiKeyPayload(BaseModel):
         key: str
 
+    class ExcludesPayload(BaseModel):
+        excluded: list[str]
+
     @app.get("/supermemory/")
     def _index() -> FileResponse:  # type: ignore[misc]
         return FileResponse(str(static_index))
@@ -83,3 +93,37 @@ def mount_supermemory_routes(app: object, instance_path: Optional[str] = None) -
         if instance_path:
             _persist_to_env_file(Path(instance_path) / ".env", _API_KEY_ENV, value)
         return JSONResponse({"ok": True})
+
+    @app.get("/supermemory/tags")
+    async def _list_tags() -> JSONResponse:  # type: ignore[misc]
+        if not is_configured():
+            return JSONResponse({"configured": False, "pinned": None, "discovered": [], "excluded": []})
+        pinned = recall_pinned_tags()
+        if pinned:
+            return JSONResponse(
+                {"configured": True, "pinned": pinned, "discovered": [], "excluded": recall_excluded_tags()}
+            )
+        discovered = await discover_container_tags()
+        return JSONResponse(
+            {"configured": True, "pinned": None, "discovered": discovered, "excluded": recall_excluded_tags()}
+        )
+
+    @app.post("/supermemory/tags")
+    def _set_tag_excludes(payload: ExcludesPayload) -> JSONResponse:  # type: ignore[misc]
+        excluded = sorted({t.strip() for t in (payload.excluded or []) if isinstance(t, str) and t.strip()})
+        value = ",".join(excluded)
+        if value:
+            os.environ[RECALL_EXCLUDED_TAGS_ENV] = value
+        else:
+            os.environ.pop(RECALL_EXCLUDED_TAGS_ENV, None)
+        if instance_path:
+            _persist_to_env_file(Path(instance_path) / ".env", RECALL_EXCLUDED_TAGS_ENV, value)
+        return JSONResponse({"ok": True, "excluded": excluded})
+
+    @app.post("/supermemory/tags/refresh")
+    async def _refresh_tags() -> JSONResponse:  # type: ignore[misc]
+        invalidate_tag_cache()
+        if not is_configured():
+            return JSONResponse({"configured": False, "discovered": []})
+        discovered = await discover_container_tags()
+        return JSONResponse({"configured": True, "discovered": discovered})

@@ -2,19 +2,21 @@
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from typing import Any, Dict, List
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from reachy_mini_supermemory_app._supermemory_client import (
+    RECALL_EXCLUDED_TAGS_ENV,
+    RECALL_TAGS_ENV,
+    _reset_tag_cache_for_tests,
+)
 from recall_memory import (  # type: ignore[import-not-found]
     DEFAULT_LIMIT,
     MAX_LIMIT,
-    RECALL_TAGS_ENV,
     RecallMemory,
-    _discover_container_tags,
-    _override_tags_from_env,
     _parse_matches,
-    _reset_tag_cache_for_tests,
     _resolve_recall_tags,
 )
 
@@ -22,6 +24,14 @@ from recall_memory import (  # type: ignore[import-not-found]
 @pytest.fixture(autouse=True)
 def _clean_tag_cache() -> None:
     _reset_tag_cache_for_tests()
+
+
+def _patched_post_json(mock: AsyncMock) -> ExitStack:
+    """Patch post_json in both modules so search and discovery share one mock."""
+    stack = ExitStack()
+    stack.enter_context(patch("recall_memory.post_json", new=mock))
+    stack.enter_context(patch("reachy_mini_supermemory_app._supermemory_client.post_json", new=mock))
+    return stack
 
 
 @pytest.mark.asyncio
@@ -41,7 +51,7 @@ async def test_recall_memory_passes_query_and_clamps_limit(monkeypatch: pytest.M
         captured["body"] = body
         return {"results": []}
 
-    with patch("recall_memory.post_json", new=AsyncMock(side_effect=fake_post_json)):
+    with _patched_post_json(AsyncMock(side_effect=fake_post_json)):
         tool = RecallMemory()
         await tool(deps=None, query="favorite book", limit=999)  # type: ignore[arg-type]
 
@@ -63,7 +73,7 @@ async def test_recall_memory_uses_default_limit_when_unspecified(monkeypatch: py
         captured["body"] = body
         return {"results": []}
 
-    with patch("recall_memory.post_json", new=AsyncMock(side_effect=fake_post_json)):
+    with _patched_post_json(AsyncMock(side_effect=fake_post_json)):
         tool = RecallMemory()
         await tool(deps=None, query="anything")  # type: ignore[arg-type]
 
@@ -83,7 +93,7 @@ async def test_recall_memory_returns_parsed_matches(monkeypatch: pytest.MonkeyPa
         ]
     }
 
-    with patch("recall_memory.post_json", new=AsyncMock(return_value=api_response)):
+    with _patched_post_json(AsyncMock(return_value=api_response)):
         tool = RecallMemory()
         result = await tool(deps=None, query="user")  # type: ignore[arg-type]
 
@@ -98,7 +108,7 @@ async def test_recall_memory_returns_parsed_matches(monkeypatch: pytest.MonkeyPa
 @pytest.mark.asyncio
 async def test_recall_memory_returns_empty_when_no_matches(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(RECALL_TAGS_ENV, "reachy-mini:supermemory")
-    with patch("recall_memory.post_json", new=AsyncMock(return_value={"results": []})):
+    with _patched_post_json(AsyncMock(return_value={"results": []})):
         tool = RecallMemory()
         result = await tool(deps=None, query="x")  # type: ignore[arg-type]
 
@@ -108,7 +118,7 @@ async def test_recall_memory_returns_empty_when_no_matches(monkeypatch: pytest.M
 @pytest.mark.asyncio
 async def test_recall_memory_propagates_error_dict(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(RECALL_TAGS_ENV, "reachy-mini:supermemory")
-    with patch("recall_memory.post_json", new=AsyncMock(return_value={"error": "down"})):
+    with _patched_post_json(AsyncMock(return_value={"error": "down"})):
         tool = RecallMemory()
         result = await tool(deps=None, query="x")  # type: ignore[arg-type]
 
@@ -140,82 +150,60 @@ def test_parse_matches_extracts_v3_chunks_shape() -> None:
     assert matches == [{"memory": "user said hi assistant replied", "score": pytest.approx(0.65)}]
 
 
-def test_override_tags_from_env_parses_csv(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(RECALL_TAGS_ENV, "hermes, reachy-mini:supermemory ,reachy_mini")
-    assert _override_tags_from_env() == ["hermes", "reachy-mini:supermemory", "reachy_mini"]
-
-
-def test_override_tags_from_env_blank_returns_empty(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv(RECALL_TAGS_ENV, raising=False)
-    assert _override_tags_from_env() == []
-    monkeypatch.setenv(RECALL_TAGS_ENV, "   ,  ")
-    assert _override_tags_from_env() == []
-
-
 @pytest.mark.asyncio
-async def test_resolve_recall_tags_prefers_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_resolve_recall_tags_prefers_env_pin(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(RECALL_TAGS_ENV, "alpha,beta")
-    # post_json must NOT be called when env override is present.
-    with patch("recall_memory.post_json", new=AsyncMock(side_effect=AssertionError("should not call API"))):
+    monkeypatch.setenv(RECALL_EXCLUDED_TAGS_ENV, "alpha")  # ignored when pinned
+    with _patched_post_json(AsyncMock(side_effect=AssertionError("should not call API"))):
         assert await _resolve_recall_tags() == ["alpha", "beta"]
 
 
 @pytest.mark.asyncio
-async def test_resolve_recall_tags_runs_discovery_then_caches(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_resolve_recall_tags_filters_excluded_after_discovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv(RECALL_TAGS_ENV, raising=False)
+    monkeypatch.setenv(RECALL_EXCLUDED_TAGS_ENV, "hermes,sm_project_twitter_bookmarks")
+    pages: List[Dict[str, Any]] = [
+        {
+            "memories": [
+                {"containerTags": ["hermes"]},
+                {"containerTags": ["reachy-mini:supermemory"]},
+                {"containerTags": ["sm_project_twitter_bookmarks"]},
+            ],
+            "pagination": {"totalPages": 1, "currentPage": 1},
+        }
+    ]
+
+    async def fake_post_json(path: str, body: dict) -> dict:
+        assert path == "/v3/documents/list"
+        return pages[body["page"] - 1] if body["page"] - 1 < len(pages) else {"memories": []}
+
+    with _patched_post_json(AsyncMock(side_effect=fake_post_json)):
+        tags = await _resolve_recall_tags()
+    assert tags == ["reachy-mini:supermemory"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_recall_tags_falls_back_when_excluding_everything(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(RECALL_TAGS_ENV, raising=False)
+    monkeypatch.setenv(RECALL_EXCLUDED_TAGS_ENV, "hermes,reachy-mini:supermemory")
     pages: List[Dict[str, Any]] = [
         {
             "memories": [
                 {"containerTags": ["hermes"]},
                 {"containerTags": ["reachy-mini:supermemory"]},
             ],
-            "pagination": {"totalPages": 2, "currentPage": 1},
-        },
-        {
-            "memories": [{"containerTags": ["reachy_mini", "hermes"]}],
-            "pagination": {"totalPages": 2, "currentPage": 2},
-        },
+            "pagination": {"totalPages": 1, "currentPage": 1},
+        }
     ]
-    call_count = {"n": 0}
 
     async def fake_post_json(path: str, body: dict) -> dict:
-        assert path == "/v3/documents/list"
-        page = body["page"] - 1
-        call_count["n"] += 1
-        return pages[page] if page < len(pages) else {"memories": []}
+        return pages[body["page"] - 1] if body["page"] - 1 < len(pages) else {"memories": []}
 
-    with patch("recall_memory.post_json", new=AsyncMock(side_effect=fake_post_json)):
-        first = await _resolve_recall_tags()
-    assert first == ["hermes", "reachy-mini:supermemory", "reachy_mini"]
-    assert call_count["n"] == 2  # paginated until totalPages reached
-
-    # Second call should be served from cache — no further post_json invocations.
-    with patch("recall_memory.post_json", new=AsyncMock(side_effect=AssertionError("cache miss"))):
-        second = await _resolve_recall_tags()
-    assert second == first
-
-
-@pytest.mark.asyncio
-async def test_resolve_recall_tags_falls_back_to_own_scope_on_empty_discovery(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv(RECALL_TAGS_ENV, raising=False)
-    with patch("recall_memory.post_json", new=AsyncMock(return_value={"memories": []})):
+    with _patched_post_json(AsyncMock(side_effect=fake_post_json)):
         with patch("recall_memory.derive_container_tag", return_value="reachy-mini:supermemory"):
             tags = await _resolve_recall_tags()
     assert tags == ["reachy-mini:supermemory"]
-
-
-@pytest.mark.asyncio
-async def test_discover_container_tags_stops_on_error() -> None:
-    async def fake_post_json(path: str, body: dict) -> dict:
-        if body["page"] == 1:
-            return {
-                "memories": [{"containerTags": ["hermes"]}],
-                "pagination": {"totalPages": 5, "currentPage": 1},
-            }
-        return {"error": "boom"}
-
-    with patch("recall_memory.post_json", new=AsyncMock(side_effect=fake_post_json)):
-        tags = await _discover_container_tags()
-    assert tags == ["hermes"]
