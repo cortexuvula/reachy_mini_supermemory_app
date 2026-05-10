@@ -36,12 +36,17 @@ def _configure_environment() -> None:
     _patch_inline_memory_into_prompt()
 
 
-def _patch_inline_memory_into_prompt() -> None:
-    """Append the inline-memory block to ``get_session_instructions`` output.
+INLINE_MEMORY_PLACEHOLDER = "<<INLINE_MEMORY>>"
 
-    Done at session-prompt-load time rather than as a static template include
-    so the bullet list reflects whatever the user has accumulated, without us
-    having to rewrite ``instructions.txt`` on every edit.
+
+def _patch_inline_memory_into_prompt() -> None:
+    """Substitute the inline-memory block into ``get_session_instructions`` output.
+
+    Done at prompt-load time so the bullet list reflects whatever the user has
+    accumulated, without rewriting ``instructions.txt`` on every edit. If the
+    profile prompt contains the ``<<INLINE_MEMORY>>`` placeholder, the block is
+    swapped in there (preferred — keeps it salient near the top); otherwise it
+    falls back to appending at the end.
     """
     try:
         from reachy_mini_conversation_app import prompts as _prompts
@@ -56,6 +61,10 @@ def _patch_inline_memory_into_prompt() -> None:
     def _with_inline_memory() -> str:  # type: ignore[no-untyped-def]
         base = original()
         block = render_block()
+        if INLINE_MEMORY_PLACEHOLDER in base:
+            # Drop the placeholder line entirely when there's nothing to inject.
+            replacement = block if block else ""
+            return base.replace(INLINE_MEMORY_PLACEHOLDER, replacement)
         if not block:
             return base
         return f"{base}\n\n{block}\n"

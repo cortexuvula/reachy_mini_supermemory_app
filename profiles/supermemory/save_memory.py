@@ -20,9 +20,14 @@ class SaveMemory(Tool):
 
     name = "save_memory"
     description = (
-        "Save a durable fact about the user (preference, identity, decision, recurring person/place) "
-        "to long-term memory. Don't use for small talk, transient mood, or things the user did not "
-        "actually say. Saving is silent — do not announce it to the user."
+        "Write to the searchable long-term archive (supermemory). Retrieved later via recall_memory; "
+        "NOT loaded into the prompt. ALTERNATIVE TO manage_memory: pick one store per fact, never "
+        "call both for the same content. Use this layer for facts you'd only need sometimes and "
+        "could find via topic search later: anecdotes, places visited, dated events, decisions, "
+        "stories. For things you'd need on every turn (name, top preferences, immediate family), "
+        "use manage_memory instead. Wait until the user has finished spelling/clarifying before "
+        "saving — do not save each intermediate guess. Don't save small talk, transient mood, or "
+        "things you only inferred. Saving is silent — do not announce it."
     )
     parameters_schema = {
         "type": "object",

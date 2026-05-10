@@ -24,13 +24,16 @@ class ManageMemory(Tool):
 
     name = "manage_memory"
     description = (
-        "Curate Reachy's always-loaded inline memory: short durable facts about the user that get "
-        "injected into every session's prompt so the user never has to re-explain them. "
-        "Use ONLY for high-signal facts: name, preferences, recurring people, decisions, environment "
-        "specifics. NEVER for small talk, transient mood, task state, or anything easily re-discovered. "
-        "Test before saving: 'will this still matter in 3 sessions?'. There is a hard character limit; "
-        "remove or replace older entries before adding new ones if you hit it. Editing is silent — "
-        "don't announce additions to the user."
+        "Curate Reachy's always-loaded inline memory — the small block of durable facts injected "
+        "into every session's prompt so the user never has to re-explain them. ALTERNATIVE TO "
+        "save_memory: pick one store per fact, never call both for the same content. Use this layer "
+        "when the fact would change how you behave on every turn (the user's name, top preferences, "
+        "immediate family / recurring people, hard rules and corrections). For one-off anecdotes, "
+        "places, dates, or stories, use save_memory instead. Wait until the user has finished "
+        "spelling or clarifying before saving — never call this multiple times for the same fact "
+        "during a clarification. Use action='replace' to fix a previously-saved entry. There is a "
+        "hard character limit; remove or replace older entries before adding new ones if hit. "
+        "Editing is silent — don't announce additions to the user."
     )
     parameters_schema = {
         "type": "object",
