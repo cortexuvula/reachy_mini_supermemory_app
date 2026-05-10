@@ -74,7 +74,7 @@ class RecallMemory(Tool):
         limit = max(1, min(limit, MAX_LIMIT))
 
         body = {
-            "query": query,
+            "q": query,
             "containerTag": derive_container_tag(),
             "threshold": DEFAULT_THRESHOLD,
             "limit": limit,

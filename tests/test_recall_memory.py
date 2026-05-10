@@ -37,7 +37,7 @@ async def test_recall_memory_passes_query_and_clamps_limit() -> None:
     assert captured["path"] == "/v4/search"
     body = captured["body"]
     assert isinstance(body, dict)
-    assert body["query"] == "favorite book"
+    assert body["q"] == "favorite book"
     assert body["containerTag"] == "reachy-mini:supermemory"
     assert body["limit"] == MAX_LIMIT
     assert 0 < body["threshold"] <= 1
