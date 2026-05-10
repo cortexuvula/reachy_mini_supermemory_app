@@ -4,12 +4,10 @@ Mirrors the env-write pattern used by ``reachy_mini_conversation_app.console``
 without reaching into private API: the env-write logic is duplicated locally.
 """
 
-from __future__ import annotations
-
 import logging
 import os
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from ._supermemory_client import (
     RECALL_EXCLUDED_TAGS_ENV,
@@ -74,7 +72,7 @@ def mount_supermemory_routes(app: object, instance_path: Optional[str] = None) -
         key: str
 
     class ExcludesPayload(BaseModel):
-        excluded: list[str]
+        excluded: List[str]
 
     @app.get("/supermemory/")
     def _index() -> FileResponse:  # type: ignore[misc]

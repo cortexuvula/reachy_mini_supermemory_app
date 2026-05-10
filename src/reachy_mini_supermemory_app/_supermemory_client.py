@@ -22,8 +22,6 @@ CONTAINER_TAG_RE = re.compile(r"[^A-Za-z0-9_:-]+")
 
 RECALL_TAGS_ENV = "SUPERMEMORY_RECALL_CONTAINER_TAGS"
 RECALL_EXCLUDED_TAGS_ENV = "SUPERMEMORY_RECALL_EXCLUDED_TAGS"
-DISCOVERY_PAGE_SIZE = 100
-DISCOVERY_MAX_PAGES = 10
 TAG_CACHE_TTL_S = 600.0
 
 _tag_cache: Dict[str, Any] = {"tags": None, "expires_at": 0.0}
@@ -74,6 +72,41 @@ def _format_http_error(response: httpx.Response) -> str:
     if excerpt:
         return f"Supermemory HTTP {response.status_code}: {excerpt}"
     return f"Supermemory HTTP {response.status_code}"
+
+
+async def get_json(path: str) -> Any:
+    """GET path from supermemory and return parsed JSON, or ``{"error": ...}``.
+
+    Returns whatever shape supermemory sends — list, dict, scalar — so callers
+    must validate before indexing.
+    """
+    try:
+        api_key = _get_api_key()
+    except SupermemoryConfigError as e:
+        return {"error": str(e)}
+
+    url = f"{_get_base_url()}{path}"
+    headers = {"Authorization": f"Bearer {api_key}"}
+
+    try:
+        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_S) as client:
+            response = await client.get(url, headers=headers)
+    except httpx.TimeoutException:
+        logger.warning("Supermemory request timed out: %s", path)
+        return {"error": "Supermemory request timed out."}
+    except httpx.HTTPError as e:
+        logger.warning("Supermemory request failed: %s", e)
+        return {"error": f"Supermemory request failed: {e}"}
+
+    if response.status_code >= 400:
+        message = _format_http_error(response)
+        logger.warning(message)
+        return {"error": message}
+
+    try:
+        return response.json()
+    except ValueError:
+        return {"error": "Supermemory returned non-JSON response."}
 
 
 async def post_json(path: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -138,11 +171,11 @@ def recall_excluded_tags() -> List[str]:
 
 
 async def discover_container_tags() -> List[str]:
-    """Enumerate distinct containerTags by paginating ``/v3/documents/list``.
+    """Enumerate distinct containerTags via ``GET /v3/container-tags/list``.
 
-    Cached for ``TAG_CACHE_TTL_S`` seconds. Bounded by ``DISCOVERY_MAX_PAGES`` so
-    cold-call latency stays predictable on accounts with very large document
-    counts. Tags in older pages may be missed; callers can override via
+    Cached for ``TAG_CACHE_TTL_S`` seconds. Returns only containers the API key
+    can actually search; ad-hoc-tagged docs without a registered Space won't
+    show up here, so callers can still override via
     ``SUPERMEMORY_RECALL_CONTAINER_TAGS``.
     """
     now = time.monotonic()
@@ -150,25 +183,21 @@ async def discover_container_tags() -> List[str]:
     if cached and now < float(_tag_cache.get("expires_at", 0.0)):
         return list(cached)
 
+    payload = await get_json("/v3/container-tags/list")
+    if isinstance(payload, dict) and "error" in payload:
+        logger.warning("Tag discovery failed: %s", payload.get("error"))
+        return []
+    if not isinstance(payload, list):
+        logger.warning("Tag discovery returned unexpected shape: %r", type(payload))
+        return []
+
     seen: Set[str] = set()
-    for page in range(1, DISCOVERY_MAX_PAGES + 1):
-        payload = await post_json("/v3/documents/list", {"limit": DISCOVERY_PAGE_SIZE, "page": page})
-        if "error" in payload:
-            logger.warning("Tag discovery aborted on page %d: %s", page, payload.get("error"))
-            break
-        memories = payload.get("memories") or []
-        if not memories:
-            break
-        for m in memories:
-            if not isinstance(m, dict):
-                continue
-            for tag in m.get("containerTags") or []:
-                if isinstance(tag, str) and tag.strip():
-                    seen.add(tag.strip())
-        pagination = payload.get("pagination") or {}
-        total_pages = pagination.get("totalPages")
-        if isinstance(total_pages, int) and page >= total_pages:
-            break
+    for entry in payload:
+        if not isinstance(entry, dict):
+            continue
+        tag = entry.get("containerTag")
+        if isinstance(tag, str) and tag.strip():
+            seen.add(tag.strip())
 
     discovered = sorted(seen)
     if discovered:

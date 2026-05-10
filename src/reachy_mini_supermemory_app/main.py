@@ -71,11 +71,47 @@ def _patch_external_profiles_into_dropdown() -> None:
     PersonalityUI._list_personalities = _list_with_external
 
 
+SETTINGS_PORT_ENV = "SUPERMEMORY_SETTINGS_PORT"
+DEFAULT_SETTINGS_PORT = 7861
+
+
 def main() -> None:
     """CLI entry point: ``reachy-mini-supermemory-app``."""
     _configure_environment()
+    _start_cli_settings_server()
     args, _ = parse_args()
     _conversation_run(args)
+
+
+def _start_cli_settings_server() -> None:
+    """Serve the /supermemory/ routes on a side-port for CLI launches.
+
+    Upstream's gradio path doesn't actually serve the FastAPI it builds — it
+    launches gradio on its own internal app. So in CLI mode we run our own
+    tiny uvicorn on a separate port to expose the settings UI. In daemon mode
+    the routes are still mounted on ``self.settings_app`` via ``run()`` below.
+    """
+    try:
+        import uvicorn
+        from fastapi import FastAPI
+    except Exception:
+        return
+
+    try:
+        port = int(os.environ.get(SETTINGS_PORT_ENV, DEFAULT_SETTINGS_PORT))
+    except ValueError:
+        port = DEFAULT_SETTINGS_PORT
+
+    instance_path = Path.cwd()
+    app = FastAPI()
+    mount_supermemory_routes(app, str(instance_path))
+
+    def _serve() -> None:
+        config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
+        uvicorn.Server(config).run()
+
+    threading.Thread(target=_serve, name="supermemory-settings", daemon=True).start()
+    print(f"Supermemory settings UI: http://127.0.0.1:{port}/supermemory/")
 
 
 class ReachyMiniSupermemoryApp(ReachyMiniConversationApp):
