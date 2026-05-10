@@ -8,8 +8,10 @@ import pytest
 from recall_memory import (  # type: ignore[import-not-found]
     DEFAULT_LIMIT,
     MAX_LIMIT,
+    RECALL_TAGS_ENV,
     RecallMemory,
     _parse_matches,
+    _recall_container_tags,
 )
 
 
@@ -34,11 +36,11 @@ async def test_recall_memory_passes_query_and_clamps_limit() -> None:
             tool = RecallMemory()
             await tool(deps=None, query="favorite book", limit=999)  # type: ignore[arg-type]
 
-    assert captured["path"] == "/v4/search"
+    assert captured["path"] == "/v3/search"
     body = captured["body"]
     assert isinstance(body, dict)
     assert body["q"] == "favorite book"
-    assert body["containerTag"] == "reachy-mini:supermemory"
+    assert body["containerTags"] == ["reachy-mini:supermemory"]
     assert body["limit"] == MAX_LIMIT
     assert 0 < body["threshold"] <= 1
 
@@ -109,3 +111,38 @@ def test_parse_matches_supports_multiple_response_shapes() -> None:
     assert _parse_matches({"memories": [{"text": "b"}]}) == [{"memory": "b"}]
     assert _parse_matches({"results": []}) == []
     assert _parse_matches({}) == []
+
+
+def test_parse_matches_extracts_v3_chunks_shape() -> None:
+    v3_payload = {
+        "results": [
+            {
+                "documentId": "abc",
+                "title": "Hermes",
+                "score": 0.65,
+                "chunks": [
+                    {"content": "user said hi", "score": 0.65},
+                    {"content": "assistant replied", "score": 0.6},
+                ],
+            }
+        ]
+    }
+    matches = _parse_matches(v3_payload)
+    assert matches == [{"memory": "user said hi assistant replied", "score": pytest.approx(0.65)}]
+
+
+def test_recall_container_tags_defaults_to_own_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(RECALL_TAGS_ENV, raising=False)
+    with patch("recall_memory.derive_container_tag", return_value="reachy-mini:supermemory"):
+        assert _recall_container_tags() == ["reachy-mini:supermemory"]
+
+
+def test_recall_container_tags_parses_csv_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(RECALL_TAGS_ENV, "hermes, reachy-mini:supermemory ,reachy_mini")
+    assert _recall_container_tags() == ["hermes", "reachy-mini:supermemory", "reachy_mini"]
+
+
+def test_recall_container_tags_blank_env_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(RECALL_TAGS_ENV, "   ,  ")
+    with patch("recall_memory.derive_container_tag", return_value="reachy-mini:default"):
+        assert _recall_container_tags() == ["reachy-mini:default"]

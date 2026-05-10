@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Dict, List
 
 from reachy_mini_conversation_app.tools.core_tools import Tool, ToolDependencies
@@ -17,6 +18,22 @@ logger = logging.getLogger(__name__)
 DEFAULT_LIMIT = 5
 MAX_LIMIT = 20
 DEFAULT_THRESHOLD = 0.6
+RECALL_TAGS_ENV = "SUPERMEMORY_RECALL_CONTAINER_TAGS"
+
+
+def _recall_container_tags() -> List[str]:
+    """Resolve the list of containerTags to search across.
+
+    Honours ``SUPERMEMORY_RECALL_CONTAINER_TAGS`` (comma-separated). When unset,
+    falls back to the active profile's own scope so recall doesn't leak across
+    personas by default.
+    """
+    raw = os.environ.get(RECALL_TAGS_ENV, "").strip()
+    if raw:
+        tags = [t.strip() for t in raw.split(",") if t.strip()]
+        if tags:
+            return tags
+    return [derive_container_tag()]
 
 
 def _parse_matches(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -27,10 +44,18 @@ def _parse_matches(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
         if not isinstance(entry, dict):
             continue
         text = entry.get("memory") or entry.get("content") or entry.get("text")
+        if not text and isinstance(entry.get("chunks"), list):
+            chunks = [
+                c.get("content")
+                for c in entry["chunks"]
+                if isinstance(c, dict) and isinstance(c.get("content"), str)
+            ]
+            if chunks:
+                text = " ".join(chunks)
         if not text:
             continue
         item: Dict[str, Any] = {"memory": text}
-        score = entry.get("score") or entry.get("relevance")
+        score = entry.get("score") or entry.get("similarity") or entry.get("relevance")
         if isinstance(score, (int, float)):
             item["score"] = float(score)
         out.append(item)
@@ -75,12 +100,12 @@ class RecallMemory(Tool):
 
         body = {
             "q": query,
-            "containerTag": derive_container_tag(),
+            "containerTags": _recall_container_tags(),
             "threshold": DEFAULT_THRESHOLD,
             "limit": limit,
         }
 
-        result = await post_json("/v4/search", body)
+        result = await post_json("/v3/search", body)
         if "error" in result:
             return result
 
