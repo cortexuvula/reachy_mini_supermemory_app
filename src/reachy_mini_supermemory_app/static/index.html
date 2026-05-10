@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>Supermemory settings</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+    body { max-width: 32rem; margin: 2rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.25rem; margin-bottom: 0.5rem; }
+    p { color: #666; }
+    label { display: block; margin: 1rem 0 0.25rem; font-weight: 600; }
+    input[type=password] { width: 100%; padding: 0.5rem; font-size: 1rem; box-sizing: border-box; }
+    button { margin-top: 1rem; padding: 0.6rem 1.2rem; font-size: 1rem; cursor: pointer; }
+    .status { margin-top: 1rem; padding: 0.5rem 0.75rem; border-radius: 0.25rem; }
+    .ok { background: #d1f0d1; color: #1e5e1e; }
+    .err { background: #f0d1d1; color: #5e1e1e; }
+  </style>
+</head>
+<body>
+  <h1>Supermemory API key</h1>
+  <p>Used by <code>save_memory</code> and <code>recall_memory</code> tools. Get a key at <a href="https://supermemory.ai" target="_blank" rel="noreferrer">supermemory.ai</a>.</p>
+  <div id="status" class="status">Checking…</div>
+  <label for="key">API key</label>
+  <input id="key" type="password" autocomplete="off" placeholder="sk-..." />
+  <button id="save">Save</button>
+  <script>
+    const statusEl = document.getElementById("status");
+    const keyEl = document.getElementById("key");
+    const saveBtn = document.getElementById("save");
+
+    async function refresh() {
+      try {
+        const r = await fetch("/supermemory/status");
+        const j = await r.json();
+        statusEl.className = "status " + (j.configured ? "ok" : "err");
+        statusEl.textContent = j.configured ? "API key is configured." : "No API key set.";
+      } catch (e) {
+        statusEl.className = "status err";
+        statusEl.textContent = "Could not reach settings backend.";
+      }
+    }
+
+    saveBtn.addEventListener("click", async () => {
+      const key = keyEl.value.trim();
+      if (!key) return;
+      saveBtn.disabled = true;
+      try {
+        const r = await fetch("/supermemory/api-key", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key }),
+        });
+        const j = await r.json();
+        if (j.ok) {
+          keyEl.value = "";
+          await refresh();
+        } else {
+          statusEl.className = "status err";
+          statusEl.textContent = j.error || "Save failed.";
+        }
+      } finally {
+        saveBtn.disabled = false;
+      }
+    });
+
+    refresh();
+  </script>
+</body>
+</html>
