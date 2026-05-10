@@ -44,7 +44,9 @@ The app sets `REACHY_MINI_EXTERNAL_PROFILES_DIRECTORY` to its bundled `profiles/
 
 ## How memories are scoped
 
-Memories are stored under a `containerTag` of `reachy-mini:<profile>`, so switching profiles in the personality UI isolates memories per persona. Memories saved while the `supermemory` profile is active live under `reachy-mini:supermemory`.
+Saves go under a `containerTag` of `reachy-mini:<profile>`, so switching profiles in the personality UI isolates writes per persona. Memories saved while the `supermemory` profile is active live under `reachy-mini:supermemory`.
+
+Recall auto-discovers all containerTags in your supermemory project on first use (cached for ten minutes), so the bot can surface memories written by other agents on the same account. Set `SUPERMEMORY_RECALL_CONTAINER_TAGS` (comma-separated) to pin recall to a specific scope instead.
 
 ## Tests
 
