@@ -33,6 +33,35 @@ def _configure_environment() -> None:
     # Default to the supermemory profile, but let an explicit env var override.
     os.environ.setdefault("REACHY_MINI_CUSTOM_PROFILE", PROFILE_NAME)
     _patch_external_profiles_into_dropdown()
+    _patch_inline_memory_into_prompt()
+
+
+def _patch_inline_memory_into_prompt() -> None:
+    """Append the inline-memory block to ``get_session_instructions`` output.
+
+    Done at session-prompt-load time rather than as a static template include
+    so the bullet list reflects whatever the user has accumulated, without us
+    having to rewrite ``instructions.txt`` on every edit.
+    """
+    try:
+        from reachy_mini_conversation_app import prompts as _prompts
+    except Exception:
+        return
+    from ._inline_memory import render_block
+
+    original = _prompts.get_session_instructions
+    if getattr(original, "_supermemory_inline_patched", False):
+        return
+
+    def _with_inline_memory() -> str:  # type: ignore[no-untyped-def]
+        base = original()
+        block = render_block()
+        if not block:
+            return base
+        return f"{base}\n\n{block}\n"
+
+    _with_inline_memory._supermemory_inline_patched = True  # type: ignore[attr-defined]
+    _prompts.get_session_instructions = _with_inline_memory
 
 
 def _patch_external_profiles_into_dropdown() -> None:

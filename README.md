@@ -2,12 +2,12 @@
 
 Reachy Mini conversation app with long-term memory backed by [supermemory.ai](https://supermemory.ai).
 
-Extends [`reachy_mini_conversation_app`](https://github.com/pollen-robotics/reachy_mini_conversation_app) with two LLM-callable tools:
+Extends [`reachy_mini_conversation_app`](https://github.com/pollen-robotics/reachy_mini_conversation_app) with two complementary memory layers:
 
-- `save_memory(content, kind?)` — write a durable fact to supermemory.
-- `recall_memory(query, limit?)` — search prior memories.
+- **Inline memory** — a small always-loaded bullet list of curated facts (under ~3000 chars) injected into Reachy's system prompt at every session start, so the user never has to re-explain things like their name or top preferences. Stored as local JSON. Managed by the `manage_memory(action, content?, old_text?)` tool with actions `add` / `replace` / `remove` / `list`.
+- **Long-term memory** (supermemory.ai) — a larger searchable store accessed via two tools: `save_memory(content, kind?)` writes a durable fact, `recall_memory(query, limit?)` semantic-searches prior memories across every tag the API key can reach.
 
-Both are tool calls only. The model decides when to use them based on `instructions.txt`. There is no auto-save and no auto-recall.
+All four tools are LLM-driven; the model decides when to use them based on `instructions.txt`. There is no auto-save and no auto-recall.
 
 ## Install
 

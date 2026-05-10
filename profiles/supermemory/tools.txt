@@ -8,3 +8,4 @@ head_tracking
 move_head
 save_memory
 recall_memory
+manage_memory
