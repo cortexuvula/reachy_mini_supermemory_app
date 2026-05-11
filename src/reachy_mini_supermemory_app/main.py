@@ -26,14 +26,15 @@ def _bundled_profiles_dir() -> Path:
 
 def _configure_environment() -> None:
     """Point the conversation app at our bundled profile, without clobbering user choices."""
-    # Must run before any subsequent helper imports upstream's prompts/config.
-    _preload_unlocked_upstream_config()
     profiles_dir = _bundled_profiles_dir()
     if profiles_dir.is_dir():
         # Always set this — it's our app's responsibility to expose its profile.
         os.environ["REACHY_MINI_EXTERNAL_PROFILES_DIRECTORY"] = str(profiles_dir)
     # Default to the supermemory profile, but let an explicit env var override.
+    # Must be set BEFORE the preload, because upstream config.py reads these
+    # env vars at class-definition time while we're loading it.
     os.environ.setdefault("REACHY_MINI_CUSTOM_PROFILE", PROFILE_NAME)
+    _preload_unlocked_upstream_config()
     _patch_external_profiles_into_dropdown()
     _patch_inline_memory_into_prompt()
 
