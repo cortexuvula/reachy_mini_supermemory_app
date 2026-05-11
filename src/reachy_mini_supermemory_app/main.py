@@ -110,7 +110,9 @@ def _patch_external_profiles_into_dropdown() -> None:
 
 
 SETTINGS_PORT_ENV = "SUPERMEMORY_SETTINGS_PORT"
+SETTINGS_HOST_ENV = "SUPERMEMORY_SETTINGS_HOST"
 DEFAULT_SETTINGS_PORT = 7861
+DEFAULT_SETTINGS_HOST = "127.0.0.1"
 
 
 def main() -> None:
@@ -139,17 +141,19 @@ def _start_cli_settings_server() -> None:
         port = int(os.environ.get(SETTINGS_PORT_ENV, DEFAULT_SETTINGS_PORT))
     except ValueError:
         port = DEFAULT_SETTINGS_PORT
+    host = (os.environ.get(SETTINGS_HOST_ENV) or DEFAULT_SETTINGS_HOST).strip() or DEFAULT_SETTINGS_HOST
 
     instance_path = Path.cwd()
     app = FastAPI()
     mount_supermemory_routes(app, str(instance_path))
 
     def _serve() -> None:
-        config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
+        config = uvicorn.Config(app, host=host, port=port, log_level="warning")
         uvicorn.Server(config).run()
 
     threading.Thread(target=_serve, name="supermemory-settings", daemon=True).start()
-    print(f"Supermemory settings UI: http://127.0.0.1:{port}/supermemory/")
+    display_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
+    print(f"Supermemory settings UI: http://{display_host}:{port}/supermemory/ (bound to {host})")
 
 
 class ReachyMiniSupermemoryApp(ReachyMiniConversationApp):
