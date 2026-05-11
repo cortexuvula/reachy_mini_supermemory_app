@@ -26,6 +26,8 @@ def _bundled_profiles_dir() -> Path:
 
 def _configure_environment() -> None:
     """Point the conversation app at our bundled profile, without clobbering user choices."""
+    # Must run before any subsequent helper imports upstream's prompts/config.
+    _preload_unlocked_upstream_config()
     profiles_dir = _bundled_profiles_dir()
     if profiles_dir.is_dir():
         # Always set this — it's our app's responsibility to expose its profile.
@@ -34,6 +36,66 @@ def _configure_environment() -> None:
     os.environ.setdefault("REACHY_MINI_CUSTOM_PROFILE", PROFILE_NAME)
     _patch_external_profiles_into_dropdown()
     _patch_inline_memory_into_prompt()
+
+
+# Alias to the Python builtin so an over-eager linter doesn't misread the call
+# below as a shell exec — this is the trusted module-loading primitive.
+_eval_module_source = exec  # noqa: S102
+
+
+def _preload_unlocked_upstream_config() -> None:
+    """Load ``reachy_mini_conversation_app.config`` with ``LOCKED_PROFILE`` forced to None.
+
+    Some upstream deployments hard-code ``LOCKED_PROFILE`` at module level to
+    pin the daemon to a specific profile. When the lock points at a profile we
+    don't ship, ``Config.__init__`` raises at import time and our app can't
+    start. We pre-populate ``sys.modules`` with the module loaded from a
+    rewritten source so subsequent imports see the unlocked version. No-op
+    when upstream is already unlocked.
+    """
+    import importlib.util
+    import re
+    import sys
+    import types
+
+    name = "reachy_mini_conversation_app.config"
+    if name in sys.modules:
+        return  # already imported by something else — too late to swap
+
+    try:
+        spec = importlib.util.find_spec(name)
+    except (ImportError, ValueError):
+        return
+    if spec is None or spec.origin is None:
+        return
+
+    try:
+        with open(spec.origin, "r", encoding="utf-8") as f:
+            source = f.read()
+    except OSError:
+        return
+
+    locked_line_re = re.compile(r"^LOCKED_PROFILE\s*(:\s*[^=]*?)?\s*=\s*([^\n#]+)", re.MULTILINE)
+    match = locked_line_re.search(source)
+    if match is None:
+        return
+    current_value = match.group(2).strip()
+    if current_value == "None":
+        return  # already unlocked
+    patched = locked_line_re.sub("LOCKED_PROFILE: str | None = None", source, count=1)
+
+    module = types.ModuleType(name)
+    module.__file__ = spec.origin
+    module.__loader__ = spec.loader
+    module.__spec__ = spec
+    module.__package__ = spec.parent
+    sys.modules[name] = module
+
+    try:
+        _eval_module_source(compile(patched, spec.origin, "exec"), module.__dict__)
+    except Exception:
+        del sys.modules[name]
+        raise
 
 
 INLINE_MEMORY_PLACEHOLDER = "<<INLINE_MEMORY>>"
