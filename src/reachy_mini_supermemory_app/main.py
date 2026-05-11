@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import importlib
 import os
 import threading
 from pathlib import Path
+from typing import Any
 
 from reachy_mini import ReachyMini
 from reachy_mini_conversation_app.main import (
@@ -37,6 +39,72 @@ def _configure_environment() -> None:
     _preload_unlocked_upstream_config()
     _patch_external_profiles_into_dropdown()
     _patch_inline_memory_into_prompt()
+    _patch_realtime_vad_defaults()
+
+
+VAD_THRESHOLD_ENV = "SUPERMEMORY_VAD_THRESHOLD"
+VAD_SILENCE_MS_ENV = "SUPERMEMORY_VAD_SILENCE_MS"
+VAD_PREFIX_PADDING_MS_ENV = "SUPERMEMORY_VAD_PREFIX_PADDING_MS"
+
+
+def _patch_realtime_vad_defaults() -> None:
+    """Inject tunable defaults into upstream's ServerVad() turn-detection calls.
+
+    Upstream constructs ``ServerVad(type="server_vad", interrupt_response=True)``
+    with no other params, accepting the OpenAI Realtime defaults (threshold 0.5,
+    silence_duration_ms 200) — too sensitive when the robot's own speaker bleeds
+    into its mic, producing constant mid-sentence interruptions. We wrap the
+    ``ServerVad`` symbol in each realtime handler module so any unset params get
+    filled in from env vars with conservative fallbacks.
+    """
+    overrides: dict[str, Any] = {}
+    raw_threshold = os.environ.get(VAD_THRESHOLD_ENV)
+    if raw_threshold:
+        try:
+            overrides["threshold"] = float(raw_threshold)
+        except ValueError:
+            pass
+    else:
+        overrides["threshold"] = 0.7
+
+    raw_silence = os.environ.get(VAD_SILENCE_MS_ENV)
+    if raw_silence:
+        try:
+            overrides["silence_duration_ms"] = int(raw_silence)
+        except ValueError:
+            pass
+    else:
+        overrides["silence_duration_ms"] = 700
+
+    raw_prefix = os.environ.get(VAD_PREFIX_PADDING_MS_ENV)
+    if raw_prefix:
+        try:
+            overrides["prefix_padding_ms"] = int(raw_prefix)
+        except ValueError:
+            pass
+    else:
+        overrides["prefix_padding_ms"] = 400
+
+    targets = (
+        "reachy_mini_conversation_app.huggingface_realtime",
+        "reachy_mini_conversation_app.openai_realtime",
+    )
+    for module_name in targets:
+        try:
+            module = importlib.import_module(module_name)
+        except Exception:
+            continue
+        original = getattr(module, "ServerVad", None)
+        if original is None or getattr(original, "_supermemory_vad_patched", False):
+            continue
+
+        def _wrapped(*args: Any, _orig: Any = original, _defaults: dict[str, Any] = overrides, **kwargs: Any) -> Any:
+            for key, value in _defaults.items():
+                kwargs.setdefault(key, value)
+            return _orig(*args, **kwargs)
+
+        _wrapped._supermemory_vad_patched = True  # type: ignore[attr-defined]
+        module.ServerVad = _wrapped
 
 
 # Alias to the Python builtin so an over-eager linter doesn't misread the call
