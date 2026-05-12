@@ -93,6 +93,25 @@ def test_capture_ignores_lines_without_role_content() -> None:
     assert cap.drain() == []
 
 
+def test_capture_filters_tool_result_json_payloads() -> None:
+    target = logging.getLogger("test.fake.console.cap4")
+    target.handlers.clear()
+    target.setLevel(logging.INFO)
+    cap = ad.TranscriptCapture()
+    target.addHandler(cap)
+    try:
+        target.info('role=assistant content={"status": "queued", "emotion": "shy1"}')
+        target.info('role=assistant content={"ok": true, "memory_id": "abc"}')
+        target.info("role=assistant content=That's sweet of you — thank you.")
+    finally:
+        target.removeHandler(cap)
+
+    items = cap.drain()
+    assert [(r, c) for _ts, r, c in items] == [
+        ("assistant", "That's sweet of you — thank you."),
+    ]
+
+
 # ---------- summarise ----------
 
 

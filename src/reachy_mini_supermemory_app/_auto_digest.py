@@ -102,6 +102,9 @@ class TranscriptCapture(logging.Handler):
         role, content = match.group(1), match.group(2).strip()
         if role not in _INTERESTING_ROLES or not content:
             return
+        # Skip tool-result JSON payloads — they're framework chatter, not transcript.
+        if content.startswith("{") and content.rstrip().endswith("}"):
+            return
         with self._lock:
             self._buffer.append((time.monotonic(), role, content))
             self._last_activity_at = time.monotonic()
@@ -255,10 +258,10 @@ def install(target_logger_name: str = "reachy_mini_conversation_app.console") ->
         daemon=True,
     )
     thread.start()
-    logger.info(
-        "Auto-digest enabled: idle=%ds, min_turns=%d, model=%s",
-        idle_seconds,
-        min_turns,
-        os.environ.get(DIGEST_MODEL_ENV, DEFAULT_DIGEST_MODEL),
+    # print() rather than logger.info() because install() runs before upstream
+    # configures the root logger, so an INFO log here would go to the void.
+    print(
+        f"Auto-digest enabled: idle={idle_seconds}s, min_turns={min_turns}, "
+        f"model={os.environ.get(DIGEST_MODEL_ENV, DEFAULT_DIGEST_MODEL)}"
     )
     return capture
