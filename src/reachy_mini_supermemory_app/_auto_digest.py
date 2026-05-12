@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import re
+import sys
 import threading
 import time
 from datetime import datetime, timezone
@@ -258,10 +259,13 @@ def install(target_logger_name: str = "reachy_mini_conversation_app.console") ->
         daemon=True,
     )
     thread.start()
-    # print() rather than logger.info() because install() runs before upstream
-    # configures the root logger, so an INFO log here would go to the void.
+    # Use stderr + flush so the line appears in the systemd journal immediately.
+    # logger.info() would be dropped (root logger isn't configured at this point),
+    # and stdout is block-buffered when systemd captures it via a pipe.
     print(
         f"Auto-digest enabled: idle={idle_seconds}s, min_turns={min_turns}, "
-        f"model={os.environ.get(DIGEST_MODEL_ENV, DEFAULT_DIGEST_MODEL)}"
+        f"model={os.environ.get(DIGEST_MODEL_ENV, DEFAULT_DIGEST_MODEL)}",
+        file=sys.stderr,
+        flush=True,
     )
     return capture
