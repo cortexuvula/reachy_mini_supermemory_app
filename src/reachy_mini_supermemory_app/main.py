@@ -250,8 +250,48 @@ def main() -> None:
     """CLI entry point: ``reachy-mini-supermemory-app``."""
     _configure_environment()
     _start_cli_settings_server()
+    _wake_up_robot_async()
     args, _ = parse_args()
     _conversation_run(args)
+
+
+DAEMON_API_BASE_ENV = "REACHY_MINI_DAEMON_API_BASE"
+DEFAULT_DAEMON_API_BASE = "http://127.0.0.1:8000"
+
+
+def _wake_up_robot_async() -> None:
+    """Fire-and-forget wake-up via the daemon's REST API.
+
+    The Reachy Mini daemon starts the robot in sleep pose
+    (``--no-wake-up-on-start``); the conversation app doesn't wake it.
+    Without this, the bot will talk but the head stays on the base and
+    every motor tool (dance, move_head, play_emotion) is silently ignored.
+    Runs in a daemon thread with a small startup delay so it doesn't race
+    the daemon coming up.
+    """
+    import time
+
+    base = (os.environ.get(DAEMON_API_BASE_ENV) or DEFAULT_DAEMON_API_BASE).rstrip("/")
+
+    def _wake() -> None:
+        try:
+            import httpx
+        except Exception:
+            return
+        # Daemon usually settles within a couple of seconds; give it a head start.
+        time.sleep(3)
+        for _ in range(5):
+            try:
+                resp = httpx.post(f"{base}/api/move/play/wake_up", timeout=5.0)
+                if resp.status_code < 400:
+                    print(f"Reachy Mini woken up via {base}/api/move/play/wake_up")
+                    return
+            except Exception:
+                pass
+            time.sleep(2)
+        print("Warning: could not wake Reachy Mini — robot may stay in sleep pose")
+
+    threading.Thread(target=_wake, name="supermemory-wake", daemon=True).start()
 
 
 def _start_cli_settings_server() -> None:
