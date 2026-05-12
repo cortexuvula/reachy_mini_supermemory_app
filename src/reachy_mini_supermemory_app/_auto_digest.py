@@ -106,6 +106,15 @@ class TranscriptCapture(logging.Handler):
         # Skip tool-result JSON payloads — they're framework chatter, not transcript.
         if content.startswith("{") and content.rstrip().endswith("}"):
             return
+        # Drop transcripts while the user has privacy mode on — side
+        # conversations shouldn't end up in the supermemory archive.
+        try:
+            from ._privacy_mode import is_privacy_active
+
+            if is_privacy_active():
+                return
+        except Exception:
+            pass
         with self._lock:
             self._buffer.append((time.monotonic(), role, content))
             self._last_activity_at = time.monotonic()

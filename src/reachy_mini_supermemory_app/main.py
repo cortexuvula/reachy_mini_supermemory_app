@@ -363,7 +363,17 @@ class ReachyMiniSupermemoryApp(ReachyMiniConversationApp):
         except Exception:
             instance_path = None
         mount_supermemory_routes(self.settings_app, str(instance_path) if instance_path else None)
+        self._install_privacy_mode(reachy_mini)
         super().run(reachy_mini, stop_event)
+
+    @staticmethod
+    def _install_privacy_mode(reachy_mini: ReachyMini) -> None:
+        """Wire up antenna-press privacy toggle (no-op when env-gate is off)."""
+        try:
+            from ._privacy_mode import install as _privacy_install
+        except Exception:
+            return
+        _privacy_install(reachy_mini)
 
 
 if __name__ == "__main__":
