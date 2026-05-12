@@ -6,6 +6,7 @@ Extends [`reachy_mini_conversation_app`](https://github.com/pollen-robotics/reac
 
 - **Inline memory** — a small always-loaded bullet list of curated facts (under ~3000 chars) injected into Reachy's system prompt at every session start, so the user never has to re-explain things like their name or top preferences. Stored as local JSON. Managed by the `manage_memory(action, content?, old_text?)` tool with actions `add` / `replace` / `remove` / `list`.
 - **Long-term memory** (supermemory.ai) — a larger searchable store accessed via two tools: `save_memory(content, kind?)` writes a durable fact, `recall_memory(query, limit?)` semantic-searches prior memories across every tag the API key can reach.
+- **Auto-digest (opt-in)** — when `SUPERMEMORY_AUTO_DIGEST=true`, idle conversations get summarised by a Hugging Face chat model and written to supermemory as a single entry. Captures nuance the LLM-driven save/manage tools miss. See the configuration reference for tuning.
 
 All four tools are LLM-driven; the model decides when to use them based on `instructions.txt`. There is no auto-save and no auto-recall.
 
@@ -68,6 +69,11 @@ All env vars below can go in `.env` (see `.env.example`) or be exported by your 
 | `REACHY_MINI_INLINE_MEMORY_FILE` | `$XDG_DATA_HOME/reachy_mini_supermemory_app/inline-memory.json` | Path to the always-loaded inline memory JSON. |
 | `REACHY_MINI_INLINE_MEMORY_CHAR_LIMIT` | `3000` | Hard cap on total inline-memory characters. Min 100. |
 | `REACHY_MINI_DAEMON_API_BASE` | `http://127.0.0.1:8000` | Reachy Mini daemon REST base, used by the auto-wake call at startup. |
+| `SUPERMEMORY_AUTO_DIGEST` | `false` | Opt-in. When `true`, conversation turns are buffered in memory, and after idle a Hugging Face chat model produces a one-paragraph digest written to supermemory as a single entry. Requires `HF_TOKEN`. |
+| `SUPERMEMORY_DIGEST_IDLE_MINUTES` | `10` | Minutes of conversation silence before a digest is triggered. |
+| `SUPERMEMORY_DIGEST_MIN_TURNS` | `4` | Minimum buffered turns needed before a digest is attempted (skips trivially short exchanges). |
+| `SUPERMEMORY_DIGEST_MODEL` | `meta-llama/Llama-3.1-8B-Instruct` | HF model used for the digest summarisation. |
+| `SUPERMEMORY_DIGEST_API_URL` | `https://router.huggingface.co/v1/chat/completions` | Chat-completions endpoint for the digest call. |
 
 Upstream `reachy_mini_conversation_app` env vars (e.g. `BACKEND_PROVIDER`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `HF_REALTIME_CONNECTION_MODE`, `GRADIO_SERVER_NAME`) work unchanged — see the upstream `.env.example` for the full list.
 

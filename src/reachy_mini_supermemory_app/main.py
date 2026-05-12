@@ -255,8 +255,18 @@ def main() -> None:
     _configure_environment()
     _start_cli_settings_server()
     _wake_up_robot_async()
+    _install_auto_digest()
     args, _ = parse_args()
     _conversation_run(args)
+
+
+def _install_auto_digest() -> None:
+    """Wire up the optional auto-digest pipeline (no-op when env-gate is off)."""
+    try:
+        from ._auto_digest import install
+    except Exception:
+        return
+    install()
 
 
 DAEMON_API_BASE_ENV = "REACHY_MINI_DAEMON_API_BASE"
