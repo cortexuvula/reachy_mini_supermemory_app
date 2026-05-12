@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Reachy Mini Supermemory - Voice companion with long-term memory</title>
+  <meta name="description" content="Reachy Mini conversation app with dual-layer memory: a small always-loaded inline block and a searchable supermemory.ai archive. Talk to your robot once, it remembers next session." />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <section class="hero">
+    <div class="container">
+      <div class="hero-grid">
+        <div class="hero-visual">
+          <div class="hero-placeholder">🧠 💬 🤖</div>
+        </div>
+
+        <div class="hero-content">
+          <div class="hero-header">
+            <div class="hero-icon">🧠</div>
+            <h1 class="hero-title">Reachy Mini Supermemory</h1>
+          </div>
+
+          <div class="tags">
+            <span class="tag">long-term memory</span>
+            <span class="tag">supermemory.ai</span>
+            <span class="tag">voice agent</span>
+          </div>
+
+          <p class="hero-description">
+            A voice companion app for Reachy Mini that <b>remembers across sessions</b>.
+            <br /><br />
+            Two memory layers work together: a small <b>always-loaded inline block</b> of durable facts (your name, top preferences, family) injected into Reachy's prompt every session, and a larger <b>searchable supermemory.ai archive</b> for the long tail. Reachy curates them itself — you just talk.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="features">
+    <div class="container">
+      <h2 class="section-title">What's inside</h2>
+      <ul class="feature-list">
+        <li>
+          <b>Inline memory</b> — short bullet list of high-signal facts (under 3000 chars) loaded into every system prompt. Curated by the LLM via the <code>manage_memory</code> tool.
+        </li>
+        <li>
+          <b>Supermemory.ai integration</b> — semantic search across every <code>containerTag</code> your API key can reach, including memories from other agents on the same account.
+        </li>
+        <li>
+          <b>Auto-discovered tag scope</b> — recall finds your containers automatically; toggle which ones to read from in the <code>/supermemory/</code> settings page.
+        </li>
+        <li>
+          <b>Auto-digest (opt-in)</b> — after idle, summarises the conversation and writes one entry to the archive so nuance isn't lost.
+        </li>
+        <li>
+          <b>Robot-native</b> — runs in console mode on the Reachy Mini itself; voice in and out flows through the robot's mic and speaker, not the browser.
+        </li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="technical">
+    <div class="container">
+      <div class="technical-grid">
+        <div>
+          <h2 class="section-title">How to install</h2>
+          <ol class="install-steps">
+            <li>
+              <span>
+                Make sure you already have the
+                <a href="https://github.com/pollen-robotics/reachy-mini-desktop-app/releases/latest" class="link-tertiary">Reachy Mini dashboard</a>
+                installed.
+              </span>
+            </li>
+            <li><span>Connect to your Reachy Mini.</span></li>
+            <li><span>Open the "Applications" tab in the dashboard.</span></li>
+            <li><span>Find <b>Reachy Mini Supermemory</b> in the list of available applications.</span></li>
+            <li><span>Click <b>Install</b>. The dashboard handles dependencies.</span></li>
+            <li><span>Set <code>SUPERMEMORY_API_KEY</code> in <code>.env</code> (or visit <code>/supermemory/</code> on the robot to paste it from the browser).</span></li>
+            <li><span>Start the app and say hello.</span></li>
+          </ol>
+        </div>
+
+        <div>
+          <h2 class="section-title">Configuration</h2>
+          <p>
+            Every behaviour is env-var-tunable: which tags recall searches, the inline-memory char cap, the realtime VAD threshold (so the robot's mic doesn't trip on its own speaker), and the optional auto-digest model. Full table in the
+            <a href="https://github.com/cortexuvula/reachy_mini_supermemory_app#configuration-reference" class="link-tertiary">README</a>.
+          </p>
+          <p>
+            Requires a <a href="https://supermemory.ai" class="link-tertiary">supermemory.ai</a> account and, for the optional digest feature, a Hugging Face token with inference-provider access.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer class="footer">
+    <div class="container">
+      <div class="footer-content">
+        <div class="footer-links">
+          <a href="https://github.com/cortexuvula/reachy_mini_supermemory_app" target="_blank" rel="noopener">&gt; Source on GitHub</a>
+          <a href="https://huggingface.co/spaces/pollen-robotics/Reachy-Mini_Best_Spaces" target="_blank" rel="noopener">&gt; Browse other apps</a>
+          <a href="https://huggingface.co/blog/pollen-robotics/make-and-publish-your-reachy-mini-apps" target="_blank" rel="noopener">&gt; Make your own</a>
+        </div>
+        <p class="footer-help">
+          Need help? Reach the Reachy Mini community on <a href="https://discord.gg/u3QtUBhy" target="_blank" rel="noopener">Discord</a>.
+          Built on <a href="https://www.pollen-robotics.com/" target="_blank" rel="noopener">Pollen Robotics</a>' Reachy Mini SDK x <a href="https://supermemory.ai" target="_blank" rel="noopener">supermemory.ai</a>.
+        </p>
+      </div>
+    </div>
+  </footer>
+
+</body>
+</html>

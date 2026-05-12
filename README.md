@@ -1,3 +1,16 @@
+---
+title: Reachy Mini Supermemory
+emoji: 🧠
+colorFrom: blue
+colorTo: purple
+sdk: static
+pinned: false
+short_description: Reachy Mini voice companion with dual-layer long-term memory (inline + supermemory.ai)
+tags:
+  - reachy_mini
+  - reachy_mini_python_app
+---
+
 # reachy_mini_supermemory_app
 
 Reachy Mini conversation app with long-term memory backed by [supermemory.ai](https://supermemory.ai).

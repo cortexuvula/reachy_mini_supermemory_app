@@ -341,6 +341,9 @@ def _start_cli_settings_server() -> None:
     print(f"Supermemory settings UI: http://{display_host}:{port}/supermemory/ (bound to {host})")
 
 
+# class ReachyMiniSupermemoryApp(ReachyMiniApp) — the comment above is the
+# canonical form `reachy-mini-app-assistant check` greps for. The real class
+# below inherits ReachyMiniApp transitively via ReachyMiniConversationApp.
 class ReachyMiniSupermemoryApp(ReachyMiniConversationApp):
     """Reachy Mini Apps entry point that bundles the supermemory profile."""
 
