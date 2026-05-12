@@ -23,7 +23,8 @@ PROFILE_NAME = "supermemory"
 
 
 def _bundled_profiles_dir() -> Path:
-    return Path(__file__).resolve().parent.parent.parent / "profiles"
+    # Profiles ship inside the package so they're present after `pip install`.
+    return Path(__file__).resolve().parent / "profiles"
 
 
 def _configure_environment() -> None:
@@ -346,6 +347,11 @@ def _start_cli_settings_server() -> None:
 # below inherits ReachyMiniApp transitively via ReachyMiniConversationApp.
 class ReachyMiniSupermemoryApp(ReachyMiniConversationApp):
     """Reachy Mini Apps entry point that bundles the supermemory profile."""
+
+    # Tell the dashboard which URL to iframe for the in-app settings panel.
+    # mount_supermemory_routes() attaches our routes to the daemon's
+    # settings_app (served at port 8000), so /supermemory/ resolves there.
+    custom_app_url = "http://0.0.0.0:8000/supermemory/"
 
     def run(self, reachy_mini: ReachyMini, stop_event: threading.Event) -> None:
         """Configure env, mount settings routes, then delegate to the conversation app."""

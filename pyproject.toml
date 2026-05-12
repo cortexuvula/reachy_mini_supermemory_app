@@ -38,8 +38,7 @@ include-package-data = true
 where = ["src"]
 
 [tool.setuptools.package-data]
-reachy_mini_supermemory_app = ["static/*"]
-reachy_mini_supermemory_profiles = ["profiles/**/*.txt", "profiles/**/*.py"]
+reachy_mini_supermemory_app = ["static/*", "profiles/**/*.txt", "profiles/**/*.py"]
 
 [tool.ruff]
 line-length = 119

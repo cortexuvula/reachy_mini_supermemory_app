@@ -13,7 +13,7 @@ from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_PATH = PROJECT_ROOT / "src"
-PROFILES_PATH = PROJECT_ROOT / "profiles"
+PROFILES_PATH = SRC_PATH / "reachy_mini_supermemory_app" / "profiles"
 
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
