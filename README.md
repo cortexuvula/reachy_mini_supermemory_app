@@ -97,6 +97,18 @@ uv pip install --group dev
 uv run pytest tests/ -v
 ```
 
+## Publish
+
+After committing changes, re-publish to the Hugging Face Space:
+
+```bash
+./scripts/publish.sh "your commit message"
+# or skip the slow pre-flight check:
+./scripts/publish.sh --skip-check "your commit message"
+```
+
+The script reads `HF_TOKEN` from `.env` (use a fine-grained write token scoped to the Space repo only). `HF_SPACE_REPO` defaults to `RoamingH/reachy_mini_supermemory_app`; set in `.env` to override.
+
 ## License
 
 Apache-2.0.
