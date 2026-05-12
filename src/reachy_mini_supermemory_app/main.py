@@ -349,9 +349,11 @@ class ReachyMiniSupermemoryApp(ReachyMiniConversationApp):
     """Reachy Mini Apps entry point that bundles the supermemory profile."""
 
     # Tell the dashboard which URL to iframe for the in-app settings panel.
-    # mount_supermemory_routes() attaches our routes to the daemon's
-    # settings_app (served at port 8000), so /supermemory/ resolves there.
-    custom_app_url = "http://0.0.0.0:8000/supermemory/"
+    # ReachyMiniApp.__init__ spins up uvicorn on this host:port serving
+    # self.settings_app, and auto-mounts static/index.html at "/". We then
+    # attach our /supermemory/* JSON routes to the same FastAPI in run().
+    # Port must NOT collide with the daemon (8000) or its WebRTC (8443).
+    custom_app_url = "http://0.0.0.0:8042/"
 
     def run(self, reachy_mini: ReachyMini, stop_event: threading.Event) -> None:
         """Configure env, mount settings routes, then delegate to the conversation app."""
