@@ -41,6 +41,10 @@ def _configure_environment() -> None:
     _patch_external_profiles_into_dropdown()
     _patch_inline_memory_into_prompt()
     _patch_realtime_vad_defaults()
+    # Auto-digest install lives here (not in main()) so it runs for BOTH the
+    # CLI launch and the dashboard-managed launch (which calls wrapped_run
+    # directly and never enters main()).
+    _install_auto_digest()
 
 
 VAD_THRESHOLD_ENV = "SUPERMEMORY_VAD_THRESHOLD"
@@ -256,7 +260,6 @@ def main() -> None:
     _configure_environment()
     _start_cli_settings_server()
     _wake_up_robot_async()
-    _install_auto_digest()
     args, _ = parse_args()
     _conversation_run(args)
 
