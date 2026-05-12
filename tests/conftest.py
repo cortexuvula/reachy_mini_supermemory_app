@@ -79,4 +79,48 @@ def _install_conversation_app_stub() -> None:
     sys.modules["reachy_mini_conversation_app.config"] = config_module
 
 
+def _install_main_import_stubs() -> None:
+    """Stub the upstream modules `reachy_mini_supermemory_app.main` imports at load time.
+
+    Without these, importing ``main`` from a test would crash because the real
+    reachy_mini SDK + conversation app aren't installed in CI.
+    """
+    import argparse
+
+    if "reachy_mini" not in sys.modules:
+        rm = types.ModuleType("reachy_mini")
+
+        class ReachyMini:
+            pass
+
+        rm.ReachyMini = ReachyMini
+        sys.modules["reachy_mini"] = rm
+
+    if "reachy_mini_conversation_app.main" not in sys.modules:
+        upstream_main = types.ModuleType("reachy_mini_conversation_app.main")
+
+        class ReachyMiniConversationApp:
+            settings_app = None
+
+            def _get_instance_path(self) -> Path:
+                return Path("/tmp/stub-instance")
+
+        def _stub_run(*args: Any, **kwargs: Any) -> None:
+            return None
+
+        upstream_main.ReachyMiniConversationApp = ReachyMiniConversationApp
+        upstream_main.run = _stub_run
+        sys.modules["reachy_mini_conversation_app.main"] = upstream_main
+
+    if "reachy_mini_conversation_app.utils" not in sys.modules:
+        utils = types.ModuleType("reachy_mini_conversation_app.utils")
+
+        def _stub_parse_args() -> Any:
+            return argparse.Namespace(gradio=False, head_tracker=None, no_camera=False, debug=False), []
+
+        utils.parse_args = _stub_parse_args
+        sys.modules["reachy_mini_conversation_app.utils"] = utils
+
+
 _install_conversation_app_stub()
+_install_main_import_stubs()
