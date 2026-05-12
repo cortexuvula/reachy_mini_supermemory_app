@@ -40,13 +40,36 @@ reachy-mini-supermemory-app                    # console mode
 reachy-mini-supermemory-app --gradio           # web UI on http://127.0.0.1:7860/
 ```
 
-The app sets `REACHY_MINI_EXTERNAL_PROFILES_DIRECTORY` to its bundled `profiles/` and defaults the active profile to `supermemory`. All other CLI flags from `reachy_mini_conversation_app` (e.g. `--head-tracker`, `--no-camera`, `--debug`) work unchanged. CLI launches additionally serve the supermemory settings UI on a side port (default `7861`, override with `SUPERMEMORY_SETTINGS_PORT`).
+The app sets `REACHY_MINI_EXTERNAL_PROFILES_DIRECTORY` to its bundled `profiles/` and defaults the active profile to `supermemory`. All other CLI flags from `reachy_mini_conversation_app` (e.g. `--head-tracker`, `--no-camera`, `--debug`) work unchanged. On startup the app also POSTs `/api/move/play/wake_up` to the Reachy Mini daemon so the head lifts off the base before the first turn (no manual wake needed).
+
+CLI launches additionally serve the supermemory settings UI on a side port (default `127.0.0.1:7861`). When running on the robot, set `SUPERMEMORY_SETTINGS_HOST=0.0.0.0` so a LAN client can reach `http://<robot>:7861/supermemory/` (or front it with Caddy / nginx for HTTPS so the browser will grant mic/cam access).
 
 ## How memories are scoped
 
 Saves go under a `containerTag` of `reachy-mini:<profile>`, so switching profiles in the personality UI isolates writes per persona. Memories saved while the `supermemory` profile is active live under `reachy-mini:supermemory`.
 
 Recall auto-discovers all containerTags in your supermemory project (via `GET /v3/container-tags/list`, cached for ten minutes) so the bot can surface memories written by other agents on the same account. The `/supermemory/` settings page lists every discovered tag with a checkbox; uncheck any you don't want recall to read. Set `SUPERMEMORY_RECALL_CONTAINER_TAGS` (comma-separated) to hard-pin recall to a specific scope and disable the UI controls.
+
+## Configuration reference
+
+All env vars below can go in `.env` (see `.env.example`) or be exported by your service unit. Bold means required.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| **`SUPERMEMORY_API_KEY`** | *(required)* | Bearer token for supermemory.ai. Can also be saved via `/supermemory/` UI. |
+| `SUPERMEMORY_BASE_URL` | `https://api.supermemory.ai` | API base override (e.g. for a proxy). |
+| `SUPERMEMORY_RECALL_CONTAINER_TAGS` | *auto-discover* | Comma-separated tags to pin recall scope. When set, the UI tag controls become read-only. |
+| `SUPERMEMORY_RECALL_EXCLUDED_TAGS` | *(none)* | Tags to exclude from recall (managed by the `/supermemory/` UI). Ignored when the pin list above is set. |
+| `SUPERMEMORY_SETTINGS_HOST` | `127.0.0.1` | Side-port bind for the `/supermemory/` UI. Set `0.0.0.0` to expose on the LAN. |
+| `SUPERMEMORY_SETTINGS_PORT` | `7861` | Side-port port. |
+| `SUPERMEMORY_VAD_THRESHOLD` | `0.7` | Realtime VAD threshold (0–1). Higher = less sensitive (mic less likely to trip on speaker bleed). |
+| `SUPERMEMORY_VAD_SILENCE_MS` | `700` | Silence duration (ms) before end-of-turn is committed. Higher = more tolerant of pauses. |
+| `SUPERMEMORY_VAD_PREFIX_PADDING_MS` | `400` | Audio (ms) included before speech onset is detected. |
+| `REACHY_MINI_INLINE_MEMORY_FILE` | `$XDG_DATA_HOME/reachy_mini_supermemory_app/inline-memory.json` | Path to the always-loaded inline memory JSON. |
+| `REACHY_MINI_INLINE_MEMORY_CHAR_LIMIT` | `3000` | Hard cap on total inline-memory characters. Min 100. |
+| `REACHY_MINI_DAEMON_API_BASE` | `http://127.0.0.1:8000` | Reachy Mini daemon REST base, used by the auto-wake call at startup. |
+
+Upstream `reachy_mini_conversation_app` env vars (e.g. `BACKEND_PROVIDER`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `HF_REALTIME_CONNECTION_MODE`, `GRADIO_SERVER_NAME`) work unchanged — see the upstream `.env.example` for the full list.
 
 ## Tests
 
