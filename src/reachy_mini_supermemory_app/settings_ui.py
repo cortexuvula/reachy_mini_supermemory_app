@@ -6,6 +6,7 @@ without reaching into private API: the env-write logic is duplicated locally.
 
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import List, Optional
 
@@ -21,31 +22,38 @@ from ._supermemory_client import (
 logger = logging.getLogger(__name__)
 
 _API_KEY_ENV = "SUPERMEMORY_API_KEY"
+_env_file_lock = threading.Lock()
 
 
 def _persist_to_env_file(env_path: Path, key: str, value: str) -> None:
-    """Insert or replace ``KEY=value`` in ``env_path`` (creating the file if needed)."""
-    try:
-        lines: list[str]
-        if env_path.exists():
-            lines = env_path.read_text(encoding="utf-8").splitlines()
-        else:
-            lines = []
+    """Insert or replace ``KEY=value`` in ``env_path`` (creating the file if needed).
 
-        replaced = False
-        for i, line in enumerate(lines):
-            if line.strip().startswith(f"{key}="):
-                lines[i] = f"{key}={value}"
-                replaced = True
-                break
-        if not replaced:
-            lines.append(f"{key}={value}")
+    Held under ``_env_file_lock`` so concurrent POSTs (e.g. saving the API key
+    and updating tag excludes at the same time) can't interleave their
+    read-modify-write and silently drop one of the keys.
+    """
+    with _env_file_lock:
+        try:
+            lines: list[str]
+            if env_path.exists():
+                lines = env_path.read_text(encoding="utf-8").splitlines()
+            else:
+                lines = []
 
-        env_path.parent.mkdir(parents=True, exist_ok=True)
-        env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        logger.info("Persisted %s to %s", key, env_path)
-    except Exception as e:
-        logger.warning("Failed to persist %s to %s: %s", key, env_path, e)
+            replaced = False
+            for i, line in enumerate(lines):
+                if line.strip().startswith(f"{key}="):
+                    lines[i] = f"{key}={value}"
+                    replaced = True
+                    break
+            if not replaced:
+                lines.append(f"{key}={value}")
+
+            env_path.parent.mkdir(parents=True, exist_ok=True)
+            env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            logger.info("Persisted %s to %s", key, env_path)
+        except Exception as e:
+            logger.warning("Failed to persist %s to %s: %s", key, env_path, e)
 
 
 def mount_supermemory_routes(app: object, instance_path: Optional[str] = None) -> None:

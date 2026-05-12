@@ -41,7 +41,10 @@ def _parse_matches(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
         if not text:
             continue
         item: Dict[str, Any] = {"memory": text}
-        score = entry.get("score") or entry.get("similarity") or entry.get("relevance")
+        score = next(
+            (entry[k] for k in ("score", "similarity", "relevance") if entry.get(k) is not None),
+            None,
+        )
         if isinstance(score, (int, float)):
             item["score"] = float(score)
         out.append(item)

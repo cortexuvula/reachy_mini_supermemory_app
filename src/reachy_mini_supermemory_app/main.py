@@ -151,7 +151,9 @@ def _preload_unlocked_upstream_config() -> None:
     current_value = match.group(2).strip()
     if current_value == "None":
         return  # already unlocked
-    patched = locked_line_re.sub("LOCKED_PROFILE: str | None = None", source, count=1)
+    # No count limit — if upstream ever has multiple LOCKED_PROFILE assignments
+    # (e.g. an env-gated override at the bottom), neutralise them all.
+    patched = locked_line_re.sub("LOCKED_PROFILE: str | None = None", source)
 
     module = types.ModuleType(name)
     module.__file__ = spec.origin
@@ -194,8 +196,10 @@ def _patch_inline_memory_into_prompt() -> None:
         block = render_block()
         if INLINE_MEMORY_PLACEHOLDER in base:
             # Drop the placeholder line entirely when there's nothing to inject.
+            # Replace only the first occurrence to avoid duplicating the block if
+            # the sentinel ever appears more than once in the profile prompt.
             replacement = block if block else ""
-            return base.replace(INLINE_MEMORY_PLACEHOLDER, replacement)
+            return base.replace(INLINE_MEMORY_PLACEHOLDER, replacement, 1)
         if not block:
             return base
         return f"{base}\n\n{block}\n"

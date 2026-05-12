@@ -6,6 +6,7 @@ time) so the headless settings UI can provision credentials after launch.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -25,6 +26,7 @@ RECALL_EXCLUDED_TAGS_ENV = "SUPERMEMORY_RECALL_EXCLUDED_TAGS"
 TAG_CACHE_TTL_S = 600.0
 
 _tag_cache: Dict[str, Any] = {"tags": None, "expires_at": 0.0}
+_tag_cache_lock = asyncio.Lock()
 
 
 class SupermemoryConfigError(RuntimeError):
@@ -177,34 +179,39 @@ async def discover_container_tags() -> List[str]:
     can actually search; ad-hoc-tagged docs without a registered Space won't
     show up here, so callers can still override via
     ``SUPERMEMORY_RECALL_CONTAINER_TAGS``.
+
+    Guarded by ``_tag_cache_lock`` so a burst of concurrent recall/refresh
+    requests after a cold start (or cache invalidation) collapses into one
+    network round-trip instead of stampeding the supermemory API.
     """
-    now = time.monotonic()
-    cached = _tag_cache.get("tags")
-    if cached and now < float(_tag_cache.get("expires_at", 0.0)):
-        return list(cached)
+    async with _tag_cache_lock:
+        now = time.monotonic()
+        cached = _tag_cache.get("tags")
+        if cached and now < float(_tag_cache.get("expires_at", 0.0)):
+            return list(cached)
 
-    payload = await get_json("/v3/container-tags/list")
-    if isinstance(payload, dict) and "error" in payload:
-        logger.warning("Tag discovery failed: %s", payload.get("error"))
-        return []
-    if not isinstance(payload, list):
-        logger.warning("Tag discovery returned unexpected shape: %r", type(payload))
-        return []
+        payload = await get_json("/v3/container-tags/list")
+        if isinstance(payload, dict) and "error" in payload:
+            logger.warning("Tag discovery failed: %s", payload.get("error"))
+            return []
+        if not isinstance(payload, list):
+            logger.warning("Tag discovery returned unexpected shape: %r", type(payload))
+            return []
 
-    seen: Set[str] = set()
-    for entry in payload:
-        if not isinstance(entry, dict):
-            continue
-        tag = entry.get("containerTag")
-        if isinstance(tag, str) and tag.strip():
-            seen.add(tag.strip())
+        seen: Set[str] = set()
+        for entry in payload:
+            if not isinstance(entry, dict):
+                continue
+            tag = entry.get("containerTag")
+            if isinstance(tag, str) and tag.strip():
+                seen.add(tag.strip())
 
-    discovered = sorted(seen)
-    if discovered:
-        _tag_cache["tags"] = discovered
-        _tag_cache["expires_at"] = now + TAG_CACHE_TTL_S
-        logger.info("Discovered %d containerTags: %s", len(discovered), discovered)
-    return discovered
+        discovered = sorted(seen)
+        if discovered:
+            _tag_cache["tags"] = discovered
+            _tag_cache["expires_at"] = now + TAG_CACHE_TTL_S
+            logger.info("Discovered %d containerTags: %s", len(discovered), discovered)
+        return discovered
 
 
 def invalidate_tag_cache() -> None:
