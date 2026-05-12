@@ -5,7 +5,7 @@ colorFrom: blue
 colorTo: purple
 sdk: static
 pinned: false
-short_description: Reachy Mini voice companion with dual-layer long-term memory (inline + supermemory.ai)
+short_description: Reachy Mini voice companion with persistent memory
 tags:
   - reachy_mini
   - reachy_mini_python_app
