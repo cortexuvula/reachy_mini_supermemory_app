@@ -52,23 +52,81 @@ def _configure_environment() -> None:
     _install_auto_digest()
 
 
-def _load_package_dotenv() -> None:
-    """Load /…/site-packages/reachy_mini_supermemory_app/.env into os.environ.
+def _persistent_instance_dir() -> Path:
+    """Return the user-config-dir that survives app updates / reinstalls.
 
-    Upstream loads its own instance .env only inside run() — way after we need
-    our gating env vars (SUPERMEMORY_PRIVACY_TOGGLE, SUPERMEMORY_AUTO_DIGEST,
-    HF_TOKEN, …). Mirroring upstream's load here makes the dashboard-managed
-    launch see the same env as the CLI launch.
+    Honours ``XDG_CONFIG_HOME``; falls back to ``~/.config``. The site-packages
+    install directory is unsafe for user settings because the daemon's
+    update flow runs ``pip uninstall`` and reinstalls the package — anything
+    we wrote there can be wiped.
     """
-    env_path = Path(__file__).resolve().parent / ".env"
-    if not env_path.exists():
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    p = Path(base) / "reachy_mini_supermemory_app"
+    try:
+        p.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    return p
+
+
+def _package_env_path() -> Path:
+    return Path(__file__).resolve().parent / ".env"
+
+
+def persistent_env_path() -> Path:
+    """Public for settings_ui.py — the .env file the UI must write to."""
+    return _persistent_instance_dir() / ".env"
+
+
+def _load_package_dotenv() -> None:
+    """Load the persistent .env into os.environ before anything reads env vars.
+
+    Source of truth is ``~/.config/reachy_mini_supermemory_app/.env``. On
+    first run (or in case the persistent file was deleted), we migrate any
+    legacy .env that's still sitting in the install dir. Then we sync the
+    persistent file back to the install dir so upstream's own load_dotenv
+    (which reads ``_get_instance_path().parent / .env`` with override=True)
+    finds the same values and doesn't clobber ours.
+    """
+    persistent = persistent_env_path()
+    legacy = _package_env_path()
+
+    # First-run migration: pull existing install-dir config into the
+    # persistent location so users who already set an API key don't lose it.
+    if not persistent.exists() and legacy.exists():
+        try:
+            persistent.parent.mkdir(parents=True, exist_ok=True)
+            persistent.write_bytes(legacy.read_bytes())
+            try:
+                persistent.chmod(0o600)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    if not persistent.exists():
         return
+
     try:
         from dotenv import load_dotenv
     except Exception:
         return
     try:
-        load_dotenv(dotenv_path=str(env_path), override=False)
+        load_dotenv(dotenv_path=str(persistent), override=False)
+    except Exception:
+        pass
+
+    # Sync persistent → install-dir so the upstream conversation_app's
+    # own load_dotenv(instance_path/.env, override=True) reads the SAME
+    # values instead of an empty file (which would no-op) or a stale one
+    # (which would clobber what we just loaded).
+    try:
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        legacy.write_bytes(persistent.read_bytes())
+        try:
+            legacy.chmod(0o600)
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -358,9 +416,8 @@ def _start_cli_settings_server() -> None:
         port = DEFAULT_SETTINGS_PORT
     host = (os.environ.get(SETTINGS_HOST_ENV) or DEFAULT_SETTINGS_HOST).strip() or DEFAULT_SETTINGS_HOST
 
-    instance_path = Path.cwd()
     app = FastAPI()
-    mount_supermemory_routes(app, str(instance_path))
+    mount_supermemory_routes(app, str(_persistent_instance_dir()))
 
     def _serve() -> None:
         config = uvicorn.Config(app, host=host, port=port, log_level="warning")
@@ -387,11 +444,9 @@ class ReachyMiniSupermemoryApp(ReachyMiniConversationApp):
     def run(self, reachy_mini: ReachyMini, stop_event: threading.Event) -> None:
         """Configure env, mount settings routes, then delegate to the conversation app."""
         _configure_environment()
-        try:
-            instance_path = self._get_instance_path().parent
-        except Exception:
-            instance_path = None
-        mount_supermemory_routes(self.settings_app, str(instance_path) if instance_path else None)
+        # Settings UI writes user config to the persistent path so it survives
+        # app updates (the install-dir .env can be wiped by pip uninstall).
+        mount_supermemory_routes(self.settings_app, str(_persistent_instance_dir()))
         self._install_privacy_mode(reachy_mini)
         super().run(reachy_mini, stop_event)
 

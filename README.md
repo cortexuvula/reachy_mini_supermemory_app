@@ -48,6 +48,8 @@ cp .env.example .env
 
 Or launch and visit `http://127.0.0.1:7861/supermemory/` (CLI launches) or `http://<robot>:8000/supermemory/` (daemon-registered launches) to paste the key into the settings UI.
 
+Settings written from the UI persist to `$XDG_CONFIG_HOME/reachy_mini_supermemory_app/.env` (defaults to `~/.config/reachy_mini_supermemory_app/.env`). This location is outside the package install directory so it survives app updates and reinstalls. On first run any pre-existing `.env` inside the install dir is migrated over once.
+
 ## Run
 
 ```bash
