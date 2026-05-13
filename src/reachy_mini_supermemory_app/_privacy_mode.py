@@ -92,10 +92,12 @@ class PrivacyController:
         on_deactivate: Callable[[], None],
         deviation_deg: Optional[float] = None,
         debounce_ms: Optional[int] = None,
+        on_tick: Optional[Callable[[], None]] = None,
     ) -> None:
         self._get_positions = get_present_positions
         self._on_activate = on_activate
         self._on_deactivate = on_deactivate
+        self._on_tick = on_tick
         deg = deviation_deg if deviation_deg is not None else _env_float(DEVIATION_DEG_ENV, DEFAULT_DEVIATION_DEG)
         self._deviation_rad = math.radians(deg)
         debounce = debounce_ms if debounce_ms is not None else _env_int(DEBOUNCE_MS_ENV, DEFAULT_DEBOUNCE_MS)
@@ -125,9 +127,22 @@ class PrivacyController:
                 self.tick()
             except Exception as e:
                 logger.warning("privacy-mode tick failed: %s", e)
+            if self._on_tick is not None:
+                try:
+                    self._on_tick()
+                except Exception as e:
+                    logger.warning("privacy-mode on_tick failed: %s", e)
 
     def tick(self) -> None:
-        """One poll: read antenna positions, decide if a press should toggle."""
+        """One poll: read antenna positions, decide if a press should toggle.
+
+        Detector is per-step: any consecutive sample pair within the window
+        whose delta exceeds ``deviation_rad`` counts as a press. A real press
+        is a brief spike (sharp deflect → snap back) — the older oldest-vs-
+        newest comparison missed it because both ends of the window sit at
+        rest. Smooth emote/idle animations move slowly (~3–6° per 50 ms tick)
+        and stay safely below the threshold.
+        """
         positions = self._get_positions()
         if positions is None or len(positions) < 2:
             return
@@ -135,11 +150,18 @@ class PrivacyController:
         self._window.append(sample)
         if len(self._window) < WINDOW_SIZE:
             return
-        oldest = self._window[0]
-        newest = self._window[-1]
-        delta_right = abs(newest[0] - oldest[0])
-        delta_left = abs(newest[1] - oldest[1])
-        if delta_right > self._deviation_rad or delta_left > self._deviation_rad:
+        max_step_right = 0.0
+        max_step_left = 0.0
+        prev = self._window[0]
+        for cur in list(self._window)[1:]:
+            step_right = abs(cur[0] - prev[0])
+            step_left = abs(cur[1] - prev[1])
+            if step_right > max_step_right:
+                max_step_right = step_right
+            if step_left > max_step_left:
+                max_step_left = step_left
+            prev = cur
+        if max_step_right > self._deviation_rad or max_step_left > self._deviation_rad:
             self._maybe_toggle()
 
     def _maybe_toggle(self) -> None:
@@ -171,7 +193,25 @@ class PrivacyMode:
             get_present_positions=self._get_positions,
             on_activate=self._on_activate,
             on_deactivate=self._on_deactivate,
+            on_tick=self._on_tick,
         )
+
+    def _on_tick(self) -> None:
+        """Re-assert the privacy pose each tick while active.
+
+        The conversation app's emote/idle animations also write the antenna
+        target (e.g. play_emotion 'boredom1' sweeps them ±15°), which silently
+        overrides our one-shot set in ``_on_activate``. Re-asserting at the
+        controller's 20 Hz rate keeps the antennas folded as the visible
+        indicator and gives the user firm motor torque to push against — a
+        press then produces a clean spike instead of fighting a moving target.
+        """
+        if not is_privacy_active():
+            return
+        try:
+            self.mini.set_target_antenna_joint_positions(PRIVACY_POSE)
+        except Exception:
+            pass
 
     def start(self) -> None:
         self.controller.start()
