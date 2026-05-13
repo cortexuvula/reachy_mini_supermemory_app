@@ -85,7 +85,7 @@ All env vars below can go in `.env` (see `.env.example`) or be exported by your 
 | `REACHY_MINI_DAEMON_API_BASE` | `http://127.0.0.1:8000` | Reachy Mini daemon REST base, used by the auto-wake call at startup. |
 | `SUPERMEMORY_PRIVACY_TOGGLE` | `false` | Opt-in. When `true`, an antenna press toggles privacy mode: mic stops, speaker flushes, antennas fold down. |
 | `SUPERMEMORY_PRIVACY_DEVIATION_DEG` | `25` | Antenna deviation (over a ~200 ms window) that counts as a press. Lower = more sensitive. |
-| `SUPERMEMORY_PRIVACY_DEBOUNCE_MS` | `500` | Minimum time between consecutive toggles, in ms. |
+| `SUPERMEMORY_PRIVACY_DEBOUNCE_MS` | `1500` | Minimum time between consecutive toggles, in ms. Covers motor-settling motion after a toggle. |
 | `SUPERMEMORY_AUTO_DIGEST` | `false` | Opt-in. When `true`, conversation turns are buffered in memory, and after idle a Hugging Face chat model produces a one-paragraph digest written to supermemory as a single entry. Requires `HF_TOKEN`. |
 | `SUPERMEMORY_DIGEST_IDLE_MINUTES` | `10` | Minutes of conversation silence before a digest is triggered. |
 | `SUPERMEMORY_DIGEST_MIN_TURNS` | `4` | Minimum buffered turns needed before a digest is attempted (skips trivially short exchanges). |

@@ -31,9 +31,9 @@ DEVIATION_DEG_ENV = "SUPERMEMORY_PRIVACY_DEVIATION_DEG"
 DEBOUNCE_MS_ENV = "SUPERMEMORY_PRIVACY_DEBOUNCE_MS"
 
 DEFAULT_DEVIATION_DEG = 25.0
-DEFAULT_DEBOUNCE_MS = 500
+DEFAULT_DEBOUNCE_MS = 1500  # generous: covers motor-settling motion after a toggle
 POLL_INTERVAL_S = 0.05  # 50 ms
-WINDOW_SIZE = 4  # ~200 ms history — a press creates a big oldest→newest delta within this
+WINDOW_SIZE = 4  # ~200 ms history — wide enough to see both ends of a press spike
 
 # Antenna pose used to signal "privacy is on". Symmetric, well outside the
 # resting range (~±0.2 rad) so it's visually unambiguous.
@@ -92,12 +92,10 @@ class PrivacyController:
         on_deactivate: Callable[[], None],
         deviation_deg: Optional[float] = None,
         debounce_ms: Optional[int] = None,
-        on_tick: Optional[Callable[[], None]] = None,
     ) -> None:
         self._get_positions = get_present_positions
         self._on_activate = on_activate
         self._on_deactivate = on_deactivate
-        self._on_tick = on_tick
         deg = deviation_deg if deviation_deg is not None else _env_float(DEVIATION_DEG_ENV, DEFAULT_DEVIATION_DEG)
         self._deviation_rad = math.radians(deg)
         debounce = debounce_ms if debounce_ms is not None else _env_int(DEBOUNCE_MS_ENV, DEFAULT_DEBOUNCE_MS)
@@ -127,11 +125,6 @@ class PrivacyController:
                 self.tick()
             except Exception as e:
                 logger.warning("privacy-mode tick failed: %s", e)
-            if self._on_tick is not None:
-                try:
-                    self._on_tick()
-                except Exception as e:
-                    logger.warning("privacy-mode on_tick failed: %s", e)
 
     def tick(self) -> None:
         """One poll: read antenna positions, decide if a press should toggle.
@@ -158,14 +151,26 @@ class PrivacyController:
             self._maybe_toggle()
 
     def _is_press(self, axis: int, window: list) -> bool:
-        """True iff this axis shows a large step paired with an opposite-sign step."""
-        steps = [window[i + 1][axis] - window[i][axis] for i in range(len(window) - 1)]
-        # Step furthest from zero (preserves sign).
-        peak = max(steps, key=abs)
-        if abs(peak) <= self._deviation_rad:
+        """True iff this axis shows a transient press, not a sustained motor drive.
+
+        A press is bidirectional: the antenna leaves rest, peaks, and returns.
+        Motor drive to/from a pose is unidirectional: the antenna leaves one
+        rest position and arrives at a different one. So we check both:
+
+          1) Some sample in the window deviates from the start by ≥ threshold
+          2) The window ENDS near where it started (within threshold / 2)
+
+        Condition (2) is what kills motor-drive false-fires: when the motor
+        is moving toward PRIVACY_POSE, the end of the window is far from the
+        beginning. Only a transient spike (push + release) returns home.
+        """
+        values = [w[axis] for w in window]
+        start = values[0]
+        peak_dev = max(abs(v - start) for v in values)
+        if peak_dev <= self._deviation_rad:
             return False
-        # Any opposite-sign step in the window = a reversal = press, not motor drive.
-        return any(s * peak < 0 for s in steps)
+        end_drift = abs(values[-1] - start)
+        return end_drift <= self._deviation_rad / 2
 
     def _maybe_toggle(self) -> None:
         now = time.monotonic()
@@ -196,25 +201,7 @@ class PrivacyMode:
             get_present_positions=self._get_positions,
             on_activate=self._on_activate,
             on_deactivate=self._on_deactivate,
-            on_tick=self._on_tick,
         )
-
-    def _on_tick(self) -> None:
-        """Re-assert the privacy pose each tick while active.
-
-        The conversation app's emote/idle animations also write the antenna
-        target (e.g. play_emotion 'boredom1' sweeps them ±15°), which silently
-        overrides our one-shot set in ``_on_activate``. Re-asserting at the
-        controller's 20 Hz rate keeps the antennas folded as the visible
-        indicator and gives the user firm motor torque to push against — a
-        press then produces a clean spike instead of fighting a moving target.
-        """
-        if not is_privacy_active():
-            return
-        try:
-            self.mini.set_target_antenna_joint_positions(PRIVACY_POSE)
-        except Exception:
-            pass
 
     def start(self) -> None:
         self.controller.start()
