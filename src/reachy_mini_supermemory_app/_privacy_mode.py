@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import sys
 import threading
 import time
 from collections import deque
@@ -222,6 +223,16 @@ def install(mini: Any) -> Optional[PrivacyMode]:
         return None
     pm = PrivacyMode(mini)
     pm.start()
+    # stderr + flush so the line lands in the systemd journal immediately —
+    # logger.info would be dropped at this point (root logger isn't yet
+    # configured) and stdout is block-buffered under the daemon's pipe.
+    deg = _env_float(DEVIATION_DEG_ENV, DEFAULT_DEVIATION_DEG)
+    debounce = _env_int(DEBOUNCE_MS_ENV, DEFAULT_DEBOUNCE_MS)
+    print(
+        f"Privacy mode enabled: deviation={deg}°, debounce={debounce}ms, poll={int(POLL_INTERVAL_S*1000)}ms",
+        file=sys.stderr,
+        flush=True,
+    )
     return pm
 
 

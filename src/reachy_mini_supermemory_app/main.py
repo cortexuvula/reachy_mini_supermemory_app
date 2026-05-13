@@ -29,6 +29,11 @@ def _bundled_profiles_dir() -> Path:
 
 def _configure_environment() -> None:
     """Point the conversation app at our bundled profile, without clobbering user choices."""
+    # Load the package-local .env BEFORE anything reads env vars. Upstream
+    # only loads it inside its own run() (much later), so without this our
+    # feature gates (PRIVACY_TOGGLE, AUTO_DIGEST, …) see an empty environment
+    # at install time and silently no-op.
+    _load_package_dotenv()
     profiles_dir = _bundled_profiles_dir()
     if profiles_dir.is_dir():
         # Always set this — it's our app's responsibility to expose its profile.
@@ -45,6 +50,27 @@ def _configure_environment() -> None:
     # CLI launch and the dashboard-managed launch (which calls wrapped_run
     # directly and never enters main()).
     _install_auto_digest()
+
+
+def _load_package_dotenv() -> None:
+    """Load /…/site-packages/reachy_mini_supermemory_app/.env into os.environ.
+
+    Upstream loads its own instance .env only inside run() — way after we need
+    our gating env vars (SUPERMEMORY_PRIVACY_TOGGLE, SUPERMEMORY_AUTO_DIGEST,
+    HF_TOKEN, …). Mirroring upstream's load here makes the dashboard-managed
+    launch see the same env as the CLI launch.
+    """
+    env_path = Path(__file__).resolve().parent / ".env"
+    if not env_path.exists():
+        return
+    try:
+        from dotenv import load_dotenv
+    except Exception:
+        return
+    try:
+        load_dotenv(dotenv_path=str(env_path), override=False)
+    except Exception:
+        pass
 
 
 VAD_THRESHOLD_ENV = "SUPERMEMORY_VAD_THRESHOLD"

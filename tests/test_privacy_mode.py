@@ -11,7 +11,11 @@ from reachy_mini_supermemory_app import _privacy_mode as pm
 
 
 @pytest.fixture(autouse=True)
-def _reset() -> None:
+def _reset() -> Any:
+    pm._reset_for_tests()
+    yield
+    # Also reset on the way out so the module-level flag doesn't leak into
+    # later test modules (auto-digest reads is_privacy_active()).
     pm._reset_for_tests()
 
 
