@@ -21,8 +21,7 @@ import os
 import sys
 import threading
 import time
-from collections import deque
-from typing import Any, Callable, Deque, Optional, Tuple
+from typing import Any, Callable, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +32,14 @@ DEBOUNCE_MS_ENV = "SUPERMEMORY_PRIVACY_DEBOUNCE_MS"
 DEFAULT_DEVIATION_DEG = 25.0
 DEFAULT_DEBOUNCE_MS = 1500  # generous: covers motor-settling motion after a toggle
 POLL_INTERVAL_S = 0.05  # 50 ms
-WINDOW_SIZE = 4  # ~200 ms history — wide enough to see both ends of a press spike
+# EMA smoothing for the "what counts as resting position" baseline. The slow
+# alpha lets the baseline drift to track motor poses and emote sweeps over a
+# couple of seconds without absorbing a brief press. The fast alpha kicks in
+# during debounce so the baseline catches up to whatever pose the user has
+# pushed the antenna into — that way their release is absorbed into the new
+# baseline instead of being detected as a second press.
+BASELINE_ALPHA_SLOW = 0.1
+BASELINE_ALPHA_FAST = 0.5
 
 # Antenna pose used to signal "privacy is on". Symmetric, well outside the
 # resting range (~±0.2 rad) so it's visually unambiguous.
@@ -100,7 +106,7 @@ class PrivacyController:
         self._deviation_rad = math.radians(deg)
         debounce = debounce_ms if debounce_ms is not None else _env_int(DEBOUNCE_MS_ENV, DEFAULT_DEBOUNCE_MS)
         self._debounce_s = debounce / 1000.0
-        self._window: Deque[Tuple[float, float]] = deque(maxlen=WINDOW_SIZE)
+        self._baseline: Optional[Tuple[float, float]] = None
         self._last_toggle_at: float = 0.0
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -127,50 +133,44 @@ class PrivacyController:
                 logger.warning("privacy-mode tick failed: %s", e)
 
     def tick(self) -> None:
-        """One poll: read antenna positions, decide if a press should toggle.
+        """One poll: track a slow-moving baseline, fire on any sharp deviation.
 
-        A press is a *bidirectional spike*: the user pushes one way, the
-        antenna snaps back. So we look for a large step in ONE direction
-        accompanied by an opposite-sign step elsewhere in the window. Pure
-        motor motion (e.g. driving to PRIVACY_POSE after activation) is
-        monotonic — all step signs match — so it doesn't qualify. Smooth
-        emote sweeps stay well below the per-step threshold and also don't
-        qualify. This is the third detector iteration: oldest-vs-newest
-        delta missed real presses; per-step max false-fired on motor drive
-        right after a toggle; reversal-detection ignores both.
+        A press shows up as a brief excursion AWAY from wherever the antenna
+        had been resting — could be 0° when privacy is off, ~86° when it's
+        on, or anywhere mid-emote. Anything slow enough to be motor drive
+        or an idle/emote sweep gets absorbed into the EMA baseline before
+        it can fire. During debounce we crank up the baseline alpha so the
+        user's release (return to rest) is absorbed into the new baseline
+        rather than firing a second toggle as soon as they let go.
+
+        Earlier detectors used a sliding-window comparison of oldest vs
+        newest, then a reversal check, then "trajectory must return near
+        start." All of those required the press to complete within a fixed
+        time window — they couldn't catch a normal-length tap+hold+release.
+        Baseline tracking has no window: any tap duration works.
         """
         positions = self._get_positions()
         if positions is None or len(positions) < 2:
             return
-        sample = (float(positions[0]), float(positions[1]))
-        self._window.append(sample)
-        if len(self._window) < WINDOW_SIZE:
+        r, l = float(positions[0]), float(positions[1])
+
+        if self._baseline is None:
+            self._baseline = (r, l)
             return
-        window = list(self._window)
-        if self._is_press(axis=0, window=window) or self._is_press(axis=1, window=window):
+
+        in_debounce = (time.monotonic() - self._last_toggle_at) < self._debounce_s
+        alpha = BASELINE_ALPHA_FAST if in_debounce else BASELINE_ALPHA_SLOW
+        br, bl = self._baseline
+        self._baseline = (
+            (1.0 - alpha) * br + alpha * r,
+            (1.0 - alpha) * bl + alpha * l,
+        )
+
+        if in_debounce:
+            return
+
+        if abs(r - br) > self._deviation_rad or abs(l - bl) > self._deviation_rad:
             self._maybe_toggle()
-
-    def _is_press(self, axis: int, window: list) -> bool:
-        """True iff this axis shows a transient press, not a sustained motor drive.
-
-        A press is bidirectional: the antenna leaves rest, peaks, and returns.
-        Motor drive to/from a pose is unidirectional: the antenna leaves one
-        rest position and arrives at a different one. So we check both:
-
-          1) Some sample in the window deviates from the start by ≥ threshold
-          2) The window ENDS near where it started (within threshold / 2)
-
-        Condition (2) is what kills motor-drive false-fires: when the motor
-        is moving toward PRIVACY_POSE, the end of the window is far from the
-        beginning. Only a transient spike (push + release) returns home.
-        """
-        values = [w[axis] for w in window]
-        start = values[0]
-        peak_dev = max(abs(v - start) for v in values)
-        if peak_dev <= self._deviation_rad:
-            return False
-        end_drift = abs(values[-1] - start)
-        return end_drift <= self._deviation_rad / 2
 
     def _maybe_toggle(self) -> None:
         now = time.monotonic()
@@ -186,9 +186,6 @@ class PrivacyController:
                 self._on_deactivate()
         except Exception as e:
             logger.warning("privacy-mode handler raised: %s", e)
-        # Drop the window so the new pose (e.g. antennas folded down) isn't
-        # itself interpreted as the next press.
-        self._window.clear()
 
 
 class PrivacyMode:

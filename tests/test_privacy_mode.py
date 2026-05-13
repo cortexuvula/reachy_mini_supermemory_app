@@ -49,12 +49,8 @@ def _rad(degrees: float) -> float:
 
 
 def test_small_jitter_does_not_trigger() -> None:
-    samples = [
-        (0.0, 0.0),
-        (0.05, -0.05),
-        (-0.03, 0.04),
-        (0.02, 0.0),
-    ]
+    # Baseline absorbs any tiny noise; well under the 25° threshold.
+    samples = [(0.0, 0.0), (0.05, -0.05), (-0.03, 0.04), (0.02, 0.0)]
     controller, events = _make_controller(samples)
     for _ in samples:
         controller.tick()
@@ -62,15 +58,11 @@ def test_small_jitter_does_not_trigger() -> None:
     assert not pm.is_privacy_active()
 
 
-def test_press_with_snapback_triggers_activate() -> None:
-    # A real press is a bidirectional spike: push then release.
-    # Need 4 samples (WINDOW_SIZE) where the step sequence contains a sign reversal.
-    samples = [
-        (0.0, 0.0),         # rest
-        (_rad(40), 0.0),    # pushed (+40° step)
-        (_rad(40), 0.0),    # still held
-        (0.0, 0.0),         # released (-40° step) → reversal!
-    ]
+def test_sharp_deflection_triggers_activate() -> None:
+    # First sample seeds baseline at 0°; second sample at +40° deviates
+    # beyond threshold → ON. (No need to wait for return; baseline tracking
+    # doesn't require a window.)
+    samples = [(0.0, 0.0), (_rad(40), 0.0)]
     controller, events = _make_controller(samples)
     for _ in samples:
         controller.tick()
@@ -78,53 +70,63 @@ def test_press_with_snapback_triggers_activate() -> None:
     assert pm.is_privacy_active()
 
 
-def test_monotonic_motor_drive_does_not_trigger() -> None:
-    # Pure same-direction motion (motor driving antenna from 0 → 80°) must NOT
-    # trigger — this is the regression case: re-asserting PRIVACY_POSE drives
-    # the motor and the old per-step detector mistook it for a press.
-    samples = [
-        (_rad(0), 0.0),
-        (_rad(30), 0.0),    # +30° step (exceeds 25° threshold)
-        (_rad(60), 0.0),    # +30° step
-        (_rad(80), 0.0),    # +20° step
-    ]
+def test_slow_drift_to_new_pose_does_not_trigger() -> None:
+    # An emote sweep ~50°/sec ≈ 2.5° per 50ms tick. Slow enough that the
+    # baseline EMA tracks it; lag never exceeds the 25° threshold. This is
+    # the regression case for the old per-step detector and for any
+    # detector that compared absolute position changes within a window.
+    samples = [(_rad(i * 2.5), 0.0) for i in range(0, 17)]  # 0 → 40°
     controller, events = _make_controller(samples)
     for _ in samples:
         controller.tick()
-    assert events == []  # no reversal → not a press
+    assert events == []
     assert not pm.is_privacy_active()
 
 
-def test_second_press_deactivates() -> None:
-    # 8 samples: window builds to ON press, clears; window rebuilds to OFF press.
+def test_press_release_does_not_double_toggle() -> None:
+    # User presses (40°), holds, then releases. The whole sequence happens
+    # within the debounce window so the release is absorbed into the
+    # fast-tracking baseline and OFF does NOT fire spuriously.
     samples = [
-        (0.0, 0.0),
-        (_rad(40), 0.0),
-        (_rad(40), 0.0),
-        (0.0, 0.0),         # ON (right antenna pressed)
-        # window cleared by toggle; refill with a left-antenna press
-        (0.0, 0.0),
-        (0.0, _rad(40)),
-        (0.0, _rad(40)),
-        (0.0, 0.0),         # OFF (left antenna pressed)
+        (0.0, 0.0),                    # seed
+        (_rad(40), 0.0),               # press → ON
+        (_rad(40), 0.0),               # hold
+        (_rad(40), 0.0),               # hold
+        (0.0, 0.0),                    # release
+        (0.0, 0.0),                    # rest
     ]
-    controller, events = _make_controller(samples)
+    # 10s debounce — unit tests run in microseconds, so every tick after
+    # the first toggle is within debounce.
+    controller, events = _make_controller(samples, debounce_ms=10000)
     for _ in samples:
         controller.tick()
+    assert events == ["on"]
+    assert pm.is_privacy_active()
+
+
+def test_second_press_after_debounce_deactivates() -> None:
+    # Toggle ON, simulate debounce expiry by rewinding _last_toggle_at, then
+    # press the other antenna. Second press fires OFF.
+    samples = [
+        (0.0, 0.0),                    # seed
+        (_rad(40), 0.0),               # press R → ON
+        (0.0, _rad(40)),               # press L → OFF (after fast-forward)
+    ]
+    controller, events = _make_controller(samples, debounce_ms=1000)
+    controller.tick()                   # seed baseline
+    controller.tick()                   # press → ON
+    controller._last_toggle_at -= 10.0  # fast-forward past debounce
+    controller.tick()                   # second press → OFF
     assert events == ["on", "off"]
     assert not pm.is_privacy_active()
 
 
 def test_debounce_blocks_immediate_retrigger() -> None:
+    # 5s debounce; second press lands within microseconds → blocked.
     samples = [
         (0.0, 0.0),
-        (_rad(40), 0.0),
-        (_rad(40), 0.0),
-        (0.0, 0.0),         # ON
-        (0.0, 0.0),
-        (0.0, _rad(40)),
-        (0.0, _rad(40)),
-        (0.0, 0.0),         # would be OFF but debounced
+        (_rad(40), 0.0),               # ON
+        (0.0, _rad(40)),               # would be OFF but debounce blocks it
     ]
     controller, events = _make_controller(samples, debounce_ms=5000)
     for _ in samples:
@@ -133,9 +135,9 @@ def test_debounce_blocks_immediate_retrigger() -> None:
     assert pm.is_privacy_active()
 
 
-def test_partial_window_does_not_trigger() -> None:
-    # Fewer than WINDOW_SIZE samples should never trigger.
-    samples = [(0.0, 0.0), (_rad(40), _rad(40))]
+def test_first_sample_only_seeds_baseline() -> None:
+    # Single sample sets baseline; no toggle without a second sample to compare.
+    samples = [(_rad(40), _rad(40))]
     controller, events = _make_controller(samples)
     for _ in samples:
         controller.tick()
@@ -197,7 +199,7 @@ def test_privacy_mode_deactivate_restores() -> None:
 
 def test_handler_errors_dont_propagate() -> None:
     # If on_activate raises, the controller should swallow it and not crash the thread.
-    samples = [(0.0, 0.0), (_rad(40), 0.0), (_rad(40), 0.0), (0.0, 0.0)]
+    samples = [(0.0, 0.0), (_rad(40), 0.0)]
 
     def _boom() -> None:
         raise RuntimeError("boom")
