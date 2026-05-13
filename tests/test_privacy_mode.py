@@ -62,13 +62,14 @@ def test_small_jitter_does_not_trigger() -> None:
     assert not pm.is_privacy_active()
 
 
-def test_large_deflection_triggers_activate() -> None:
-    # Fill the window with calm samples then deflect one antenna sharply.
+def test_press_with_snapback_triggers_activate() -> None:
+    # A real press is a bidirectional spike: push then release.
+    # Need 4 samples (WINDOW_SIZE) where the step sequence contains a sign reversal.
     samples = [
-        (0.0, 0.0),
-        (0.0, 0.0),
-        (0.0, 0.0),
-        (_rad(40), 0.0),  # right antenna pushed ~40°
+        (0.0, 0.0),         # rest
+        (_rad(40), 0.0),    # pushed (+40° step)
+        (_rad(40), 0.0),    # still held
+        (0.0, 0.0),         # released (-40° step) → reversal!
     ]
     controller, events = _make_controller(samples)
     for _ in samples:
@@ -77,18 +78,35 @@ def test_large_deflection_triggers_activate() -> None:
     assert pm.is_privacy_active()
 
 
+def test_monotonic_motor_drive_does_not_trigger() -> None:
+    # Pure same-direction motion (motor driving antenna from 0 → 80°) must NOT
+    # trigger — this is the regression case: re-asserting PRIVACY_POSE drives
+    # the motor and the old per-step detector mistook it for a press.
+    samples = [
+        (_rad(0), 0.0),
+        (_rad(30), 0.0),    # +30° step (exceeds 25° threshold)
+        (_rad(60), 0.0),    # +30° step
+        (_rad(80), 0.0),    # +20° step
+    ]
+    controller, events = _make_controller(samples)
+    for _ in samples:
+        controller.tick()
+    assert events == []  # no reversal → not a press
+    assert not pm.is_privacy_active()
+
+
 def test_second_press_deactivates() -> None:
-    # 8 samples: first 4 set up + trigger ON; clear window then 4 more trigger OFF.
+    # 8 samples: window builds to ON press, clears; window rebuilds to OFF press.
     samples = [
         (0.0, 0.0),
+        (_rad(40), 0.0),
+        (_rad(40), 0.0),
+        (0.0, 0.0),         # ON (right antenna pressed)
+        # window cleared by toggle; refill with a left-antenna press
         (0.0, 0.0),
-        (0.0, 0.0),
-        (_rad(40), 0.0),
-        # After the ON toggle the window is cleared. Refill with calm, then deflect.
-        (_rad(40), 0.0),
-        (_rad(40), 0.0),
-        (_rad(40), 0.0),
-        (0.0, _rad(40)),  # left antenna pushed
+        (0.0, _rad(40)),
+        (0.0, _rad(40)),
+        (0.0, 0.0),         # OFF (left antenna pressed)
     ]
     controller, events = _make_controller(samples)
     for _ in samples:
@@ -100,19 +118,18 @@ def test_second_press_deactivates() -> None:
 def test_debounce_blocks_immediate_retrigger() -> None:
     samples = [
         (0.0, 0.0),
+        (_rad(40), 0.0),
+        (_rad(40), 0.0),
+        (0.0, 0.0),         # ON
         (0.0, 0.0),
-        (0.0, 0.0),
-        (_rad(40), 0.0),
-        (_rad(40), 0.0),
-        (_rad(40), 0.0),
-        (_rad(40), 0.0),
-        (0.0, _rad(40)),  # would be a second press but should be debounced
+        (0.0, _rad(40)),
+        (0.0, _rad(40)),
+        (0.0, 0.0),         # would be OFF but debounced
     ]
-    # 5s debounce — second press happens within the window
     controller, events = _make_controller(samples, debounce_ms=5000)
     for _ in samples:
         controller.tick()
-    assert events == ["on"]  # only one toggle
+    assert events == ["on"]
     assert pm.is_privacy_active()
 
 
@@ -180,7 +197,7 @@ def test_privacy_mode_deactivate_restores() -> None:
 
 def test_handler_errors_dont_propagate() -> None:
     # If on_activate raises, the controller should swallow it and not crash the thread.
-    samples = [(0.0, 0.0), (0.0, 0.0), (0.0, 0.0), (_rad(40), 0.0)]
+    samples = [(0.0, 0.0), (_rad(40), 0.0), (_rad(40), 0.0), (0.0, 0.0)]
 
     def _boom() -> None:
         raise RuntimeError("boom")

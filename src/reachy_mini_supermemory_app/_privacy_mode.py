@@ -136,12 +136,15 @@ class PrivacyController:
     def tick(self) -> None:
         """One poll: read antenna positions, decide if a press should toggle.
 
-        Detector is per-step: any consecutive sample pair within the window
-        whose delta exceeds ``deviation_rad`` counts as a press. A real press
-        is a brief spike (sharp deflect → snap back) — the older oldest-vs-
-        newest comparison missed it because both ends of the window sit at
-        rest. Smooth emote/idle animations move slowly (~3–6° per 50 ms tick)
-        and stay safely below the threshold.
+        A press is a *bidirectional spike*: the user pushes one way, the
+        antenna snaps back. So we look for a large step in ONE direction
+        accompanied by an opposite-sign step elsewhere in the window. Pure
+        motor motion (e.g. driving to PRIVACY_POSE after activation) is
+        monotonic — all step signs match — so it doesn't qualify. Smooth
+        emote sweeps stay well below the per-step threshold and also don't
+        qualify. This is the third detector iteration: oldest-vs-newest
+        delta missed real presses; per-step max false-fired on motor drive
+        right after a toggle; reversal-detection ignores both.
         """
         positions = self._get_positions()
         if positions is None or len(positions) < 2:
@@ -150,19 +153,19 @@ class PrivacyController:
         self._window.append(sample)
         if len(self._window) < WINDOW_SIZE:
             return
-        max_step_right = 0.0
-        max_step_left = 0.0
-        prev = self._window[0]
-        for cur in list(self._window)[1:]:
-            step_right = abs(cur[0] - prev[0])
-            step_left = abs(cur[1] - prev[1])
-            if step_right > max_step_right:
-                max_step_right = step_right
-            if step_left > max_step_left:
-                max_step_left = step_left
-            prev = cur
-        if max_step_right > self._deviation_rad or max_step_left > self._deviation_rad:
+        window = list(self._window)
+        if self._is_press(axis=0, window=window) or self._is_press(axis=1, window=window):
             self._maybe_toggle()
+
+    def _is_press(self, axis: int, window: list) -> bool:
+        """True iff this axis shows a large step paired with an opposite-sign step."""
+        steps = [window[i + 1][axis] - window[i][axis] for i in range(len(window) - 1)]
+        # Step furthest from zero (preserves sign).
+        peak = max(steps, key=abs)
+        if abs(peak) <= self._deviation_rad:
+            return False
+        # Any opposite-sign step in the window = a reversal = press, not motor drive.
+        return any(s * peak < 0 for s in steps)
 
     def _maybe_toggle(self) -> None:
         now = time.monotonic()
