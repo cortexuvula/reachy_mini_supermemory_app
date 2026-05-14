@@ -265,10 +265,42 @@ class PrivacyMode:
             logger.warning("privacy OFF start_recording failed: %s", e)
 
 
+def _patch_moves_manager_for_privacy() -> None:
+    """Force antenna writes to PRIVACY_POSE while privacy is active.
+
+    Upstream's MovesManager._issue_control_command writes head + antennas +
+    body_yaw every tick at ~60 Hz. Our 20 Hz on_tick can't reliably win that
+    race — idle breathing, emotes, and the listening-antennas blend keep
+    overriding our PRIVACY_POSE. Patching the single write point so that
+    privacy ALWAYS wins is deterministic and only ever costs a function
+    call when privacy is off (the flag check returns immediately).
+    """
+    try:
+        from reachy_mini_conversation_app import moves as _moves  # type: ignore[import-not-found]
+    except Exception:
+        return
+
+    cls = getattr(_moves, "MovesManager", None)
+    if cls is None:
+        return
+    original = getattr(cls, "_issue_control_command", None)
+    if original is None or getattr(original, "_privacy_patched", False):
+        return
+
+    def patched(self: Any, head: Any, antennas: Any, body_yaw: Any) -> Any:
+        if is_privacy_active():
+            antennas = PRIVACY_POSE
+        return original(self, head, antennas, body_yaw)
+
+    patched._privacy_patched = True  # type: ignore[attr-defined]
+    cls._issue_control_command = patched
+
+
 def install(mini: Any) -> Optional[PrivacyMode]:
     """Attach a PrivacyMode if env-gate is on. Returns the instance or None."""
     if not is_enabled():
         return None
+    _patch_moves_manager_for_privacy()
     pm = PrivacyMode(mini)
     pm.start()
     # stderr + flush so the line lands in the systemd journal immediately —

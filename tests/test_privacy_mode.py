@@ -197,6 +197,39 @@ def test_privacy_mode_deactivate_restores() -> None:
     mini.media.audio.start_recording.assert_called_once()
 
 
+def test_moves_manager_patch_forces_antennas_to_privacy_pose() -> None:
+    """The patch on MovesManager._issue_control_command should override
+    whatever antennas upstream tries to write while privacy is active."""
+    received: list = []
+
+    class FakeMovesManager:
+        def _issue_control_command(self, head: Any, antennas: Any, body_yaw: Any) -> None:
+            received.append((head, antennas, body_yaw))
+
+    # Inject a fake moves module so the patcher finds something to patch.
+    import sys
+    import types as _types
+
+    fake_module = _types.ModuleType("reachy_mini_conversation_app.moves")
+    fake_module.MovesManager = FakeMovesManager  # type: ignore[attr-defined]
+    sys.modules["reachy_mini_conversation_app.moves"] = fake_module
+    try:
+        pm._patch_moves_manager_for_privacy()
+        mgr = FakeMovesManager()
+
+        # Privacy OFF: pass through unchanged.
+        pm._set_privacy_active(False)
+        mgr._issue_control_command("h", (0.1, 0.2), 0.3)
+        assert received[-1] == ("h", (0.1, 0.2), 0.3)
+
+        # Privacy ON: antennas forced to PRIVACY_POSE.
+        pm._set_privacy_active(True)
+        mgr._issue_control_command("h", (0.1, 0.2), 0.3)
+        assert received[-1] == ("h", pm.PRIVACY_POSE, 0.3)
+    finally:
+        del sys.modules["reachy_mini_conversation_app.moves"]
+
+
 def test_handler_errors_dont_propagate() -> None:
     # If on_activate raises, the controller should swallow it and not crash the thread.
     samples = [(0.0, 0.0), (_rad(40), 0.0)]
