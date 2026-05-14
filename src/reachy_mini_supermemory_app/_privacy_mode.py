@@ -98,10 +98,12 @@ class PrivacyController:
         on_deactivate: Callable[[], None],
         deviation_deg: Optional[float] = None,
         debounce_ms: Optional[int] = None,
+        on_tick: Optional[Callable[[], None]] = None,
     ) -> None:
         self._get_positions = get_present_positions
         self._on_activate = on_activate
         self._on_deactivate = on_deactivate
+        self._on_tick = on_tick
         deg = deviation_deg if deviation_deg is not None else _env_float(DEVIATION_DEG_ENV, DEFAULT_DEVIATION_DEG)
         self._deviation_rad = math.radians(deg)
         debounce = debounce_ms if debounce_ms is not None else _env_int(DEBOUNCE_MS_ENV, DEFAULT_DEBOUNCE_MS)
@@ -131,6 +133,11 @@ class PrivacyController:
                 self.tick()
             except Exception as e:
                 logger.warning("privacy-mode tick failed: %s", e)
+            if self._on_tick is not None:
+                try:
+                    self._on_tick()
+                except Exception as e:
+                    logger.warning("privacy-mode on_tick failed: %s", e)
 
     def tick(self) -> None:
         """One poll: track a slow-moving baseline, fire on any sharp deviation.
@@ -198,7 +205,21 @@ class PrivacyMode:
             get_present_positions=self._get_positions,
             on_activate=self._on_activate,
             on_deactivate=self._on_deactivate,
+            on_tick=self._on_tick,
         )
+
+    def _on_tick(self) -> None:
+        """Re-assert PRIVACY_POSE every poll while active, so the antennas stay
+        folded as the visual indicator. Safe with the baseline-tracking detector:
+        steady motor force at PRIVACY_POSE settles into the baseline, only a
+        sharp deflection against motor torque (= a real press) exceeds threshold.
+        """
+        if not is_privacy_active():
+            return
+        try:
+            self.mini.set_target_antenna_joint_positions(PRIVACY_POSE)
+        except Exception:
+            pass
 
     def start(self) -> None:
         self.controller.start()
