@@ -57,21 +57,23 @@ def _persist_to_env_file(env_path: Path, key: str, value: str) -> None:
 
 
 _SUPERMEMORY_SECTION = """
-<section id="supermemory-section" style="max-width:32rem;margin:2rem auto;padding:0 1rem;font-family:system-ui,sans-serif;color:inherit;">
-  <h2 style="font-size:1.25rem;margin-bottom:0.5rem;">Supermemory</h2>
-  <p style="color:#888;">API key used by <code>save_memory</code> and <code>recall_memory</code>. Get one at <a href="https://supermemory.ai" target="_blank" rel="noreferrer">supermemory.ai</a>.</p>
+<details id="supermemory-section" open style="max-width:960px;margin:1rem auto;padding:1rem 1.25rem;font-family:inherit;color:inherit;border:1px solid rgba(127,127,127,0.25);border-radius:0.5rem;background:rgba(127,127,127,0.05);">
+  <summary style="font-size:1.1rem;font-weight:600;cursor:pointer;margin-bottom:0.25rem;">Supermemory</summary>
+  <p style="color:#888;margin:0.5rem 0;">API key used by <code>save_memory</code> and <code>recall_memory</code>. Get one at <a href="https://supermemory.ai" target="_blank" rel="noreferrer">supermemory.ai</a>.</p>
   <div id="sm-status" class="sm-status">Checking…</div>
-  <label for="sm-key" style="display:block;margin:1rem 0 0.25rem;font-weight:600;">API key</label>
-  <input id="sm-key" type="password" autocomplete="off" placeholder="sk-..." style="width:100%;padding:0.5rem;font-size:1rem;box-sizing:border-box;" />
-  <button id="sm-save" style="margin-top:1rem;padding:0.6rem 1.2rem;font-size:1rem;cursor:pointer;">Save</button>
+  <label for="sm-key" style="display:block;margin:0.75rem 0 0.25rem;font-weight:600;">API key</label>
+  <div style="display:flex;gap:0.5rem;align-items:stretch;">
+    <input id="sm-key" type="password" autocomplete="off" placeholder="sk-..." style="flex:1;padding:0.5rem;font-size:1rem;box-sizing:border-box;" />
+    <button id="sm-save" style="padding:0.5rem 1rem;font-size:1rem;cursor:pointer;">Save</button>
+  </div>
 
-  <h3 style="font-size:1.05rem;margin:2rem 0 0.5rem;">Recall scope</h3>
-  <p style="color:#888;">Tags <code>recall_memory</code> searches across. Saves always go to <code>reachy-mini:&lt;profile&gt;</code>. Uncheck any tag you don't want recall to read.</p>
+  <h3 style="font-size:1rem;margin:1.25rem 0 0.5rem;">Recall scope</h3>
+  <p style="color:#888;margin:0.25rem 0;">Tags <code>recall_memory</code> searches across. Saves always go to <code>reachy-mini:&lt;profile&gt;</code>. Uncheck any tag you don't want recall to read.</p>
   <div id="sm-tags-status" class="sm-status sm-info">Loading tags…</div>
-  <ul id="sm-tag-list" style="list-style:none;padding:0;margin:0.5rem 0;"></ul>
+  <ul id="sm-tag-list" style="list-style:none;padding:0;margin:0.5rem 0;max-height:200px;overflow:auto;"></ul>
   <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
-    <button id="sm-apply-tags" style="padding:0.5rem 1rem;cursor:pointer;">Apply</button>
-    <button id="sm-refresh-tags" style="padding:0.5rem 1rem;cursor:pointer;background:transparent;border:1px solid #888;">Refresh tags</button>
+    <button id="sm-apply-tags" style="padding:0.4rem 0.9rem;cursor:pointer;">Apply</button>
+    <button id="sm-refresh-tags" style="padding:0.4rem 0.9rem;cursor:pointer;background:transparent;border:1px solid #888;">Refresh tags</button>
   </div>
   <style>
     #supermemory-section .sm-status { margin-top:0.5rem;padding:0.5rem 0.75rem;border-radius:0.25rem; }
@@ -96,7 +98,7 @@ _SUPERMEMORY_SECTION = """
     refresh(); loadTags();
   })();
   </script>
-</section>
+</details>
 """
 
 
@@ -139,11 +141,18 @@ def _compose_dashboard_index(app: Any, **types: Any) -> None:
         # Upstream's HTML refs /static/* — rewrite to our /upstream-static/ mount.
         html = html.replace('href="/static/', 'href="/upstream-static/')
         html = html.replace('src="/static/', 'src="/upstream-static/')
-        # Inject our supermemory section just before </body>.
-        if "</body>" in html:
+        # Inject our supermemory section at the TOP of the container (right after
+        # upstream's hero), so it's visible in the dashboard iframe without
+        # scrolling past upstream's long settings list to find it.
+        injected = False
+        for marker in ('</header>',):  # closes upstream's <header class="hero">
+            if marker in html:
+                html = html.replace(marker, marker + _SUPERMEMORY_SECTION, 1)
+                injected = True
+                break
+        if not injected:
+            # Fallback: append at end if upstream's layout changed.
             html = html.replace("</body>", _SUPERMEMORY_SECTION + "</body>", 1)
-        else:
-            html = html + _SUPERMEMORY_SECTION
         return HTMLResponse(html)
 
 
