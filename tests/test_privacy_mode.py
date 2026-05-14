@@ -202,7 +202,7 @@ def test_moves_manager_patch_forces_antennas_to_privacy_pose() -> None:
     whatever antennas upstream tries to write while privacy is active."""
     received: list = []
 
-    class FakeMovesManager:
+    class FakeMovementManager:
         def _issue_control_command(self, head: Any, antennas: Any, body_yaw: Any) -> None:
             received.append((head, antennas, body_yaw))
 
@@ -211,11 +211,11 @@ def test_moves_manager_patch_forces_antennas_to_privacy_pose() -> None:
     import types as _types
 
     fake_module = _types.ModuleType("reachy_mini_conversation_app.moves")
-    fake_module.MovesManager = FakeMovesManager  # type: ignore[attr-defined]
+    fake_module.MovementManager = FakeMovementManager  # type: ignore[attr-defined]
     sys.modules["reachy_mini_conversation_app.moves"] = fake_module
     try:
         pm._patch_moves_manager_for_privacy()
-        mgr = FakeMovesManager()
+        mgr = FakeMovementManager()
 
         # Privacy OFF: pass through unchanged.
         pm._set_privacy_active(False)
