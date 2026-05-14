@@ -441,12 +441,22 @@ class ReachyMiniSupermemoryApp(ReachyMiniConversationApp):
     # Port must NOT collide with the daemon (8000) or its WebRTC (8443).
     custom_app_url = "http://0.0.0.0:8042/"
 
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        # Upstream's ReachyMiniApp.__init__ creates self.settings_app and
+        # registers "/" → static/index.html. We must replace that "/" route
+        # BEFORE wrapped_run() starts the uvicorn thread, otherwise the
+        # dashboard's first request sees the standalone supermemory page and
+        # only later requests see the composed conversation_app + supermemory
+        # view. .env loading is needed before mount because the routes look
+        # at SUPERMEMORY_* env vars at registration time.
+        _load_package_dotenv()
+        super().__init__(*args, **kwargs)
+        if self.settings_app is not None:
+            mount_supermemory_routes(self.settings_app, str(_persistent_instance_dir()))
+
     def run(self, reachy_mini: ReachyMini, stop_event: threading.Event) -> None:
-        """Configure env, mount settings routes, then delegate to the conversation app."""
+        """Configure env, install patches, then delegate to the conversation app."""
         _configure_environment()
-        # Settings UI writes user config to the persistent path so it survives
-        # app updates (the install-dir .env can be wiped by pip uninstall).
-        mount_supermemory_routes(self.settings_app, str(_persistent_instance_dir()))
         self._install_privacy_mode(reachy_mini)
         super().run(reachy_mini, stop_event)
 
