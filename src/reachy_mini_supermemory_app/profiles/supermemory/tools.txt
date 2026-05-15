@@ -10,3 +10,5 @@ save_memory
 recall_memory
 manage_memory
 web_search
+task_status
+task_cancel

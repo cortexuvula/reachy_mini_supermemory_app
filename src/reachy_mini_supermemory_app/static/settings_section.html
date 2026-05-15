@@ -1,3 +1,42 @@
+<style>
+  /*
+   * Fix upstream's profile/voice/backend selects rendering as native OS
+   * controls (white bg, light text → invisible) in the dashboard webview.
+   * Upstream sets background + color but no `appearance: none`, so browsers
+   * that hand <select> to the OS theme ignore the CSS. Forcing appearance
+   * none + explicit colors brings the dropdowns back into the dark theme.
+   * Scoped to elements that aren't inside our own section so we don't
+   * accidentally re-style anything we own.
+   */
+  body select:not(#supermemory-section select):not(#websearch-section select),
+  body input[type="text"]:not(#supermemory-section input):not(#websearch-section input),
+  body input[type="password"]:not(#supermemory-section input):not(#websearch-section input),
+  body textarea:not(#supermemory-section textarea):not(#websearch-section textarea) {
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+    background-color: #0b152a !important;
+    color: #e8eef9 !important;
+    border: 1px solid rgba(127, 127, 127, 0.3) !important;
+  }
+  body select:not(#supermemory-section select):not(#websearch-section select) {
+    /* Re-add a chevron since `appearance: none` drops the native one. */
+    background-image:
+      linear-gradient(45deg, transparent 50%, #e8eef9 50%),
+      linear-gradient(135deg, #e8eef9 50%, transparent 50%);
+    background-position:
+      calc(100% - 18px) 50%,
+      calc(100% - 13px) 50%;
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
+    padding-right: 30px;
+  }
+  body select option {
+    background-color: #0b152a;
+    color: #e8eef9;
+  }
+</style>
+
 <details id="supermemory-section" open style="max-width:960px;margin:1rem auto;padding:1rem 1.25rem;font-family:inherit;color:inherit;border:1px solid rgba(127,127,127,0.25);border-radius:0.5rem;background:rgba(127,127,127,0.05);">
   <summary style="font-size:1.1rem;font-weight:600;cursor:pointer;margin-bottom:0.25rem;">Supermemory</summary>
   <p style="color:#888;margin:0.5rem 0;">API key used by <code>save_memory</code> and <code>recall_memory</code>. Get one at <a href="https://supermemory.ai" target="_blank" rel="noreferrer">supermemory.ai</a>.</p>
