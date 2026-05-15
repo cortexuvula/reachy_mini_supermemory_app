@@ -50,6 +50,15 @@ def test_supermemory_section_falls_back_when_asset_missing(
     assert "supermemory-app" in section
 
 
+def test_supermemory_section_includes_websearch_block() -> None:
+    """Settings UI ships both the Supermemory and Web search sections."""
+    section = settings_ui._supermemory_section()
+    assert "websearch-section" in section
+    assert "tavily.com" in section
+    assert "/supermemory/tavily-key" in section
+    assert "/supermemory/tavily-status" in section
+
+
 def test_standalone_page_wraps_section_in_html_shell() -> None:
     """The /supermemory/ route now serves the section wrapped in a minimal shell.
 

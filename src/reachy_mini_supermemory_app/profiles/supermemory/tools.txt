@@ -9,3 +9,4 @@ move_head
 save_memory
 recall_memory
 manage_memory
+web_search

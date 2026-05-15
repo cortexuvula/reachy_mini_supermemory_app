@@ -23,7 +23,12 @@ from ._supermemory_client import (
 logger = logging.getLogger(__name__)
 
 _API_KEY_ENV = "SUPERMEMORY_API_KEY"
+_TAVILY_KEY_ENV = "TAVILY_API_KEY"
 _env_file_lock = threading.Lock()
+
+
+def _is_tavily_configured() -> bool:
+    return bool((os.environ.get(_TAVILY_KEY_ENV) or "").strip())
 
 
 def _persist_to_env_file(env_path: Path, key: str, value: str) -> bool:
@@ -238,6 +243,26 @@ def mount_supermemory_routes(app: object, instance_path: Optional[str] = None) -
     @app.get("/supermemory/status")
     def _status() -> JSONResponse:  # type: ignore[misc]
         return JSONResponse({"configured": is_configured()})
+
+    @app.get("/supermemory/tavily-status")
+    def _tavily_status() -> JSONResponse:  # type: ignore[misc]
+        return JSONResponse({"configured": _is_tavily_configured()})
+
+    @app.post("/supermemory/tavily-key")
+    def _set_tavily_key(payload: ApiKeyPayload) -> JSONResponse:  # type: ignore[misc]
+        # Same validation rules as the supermemory key — blank rejected,
+        # newlines rejected (they'd corrupt the .env file).
+        value = (payload.key or "").strip()
+        if not value:
+            return JSONResponse({"ok": False, "error": "API key is empty."}, status_code=400)
+        if "\n" in value or "\r" in value:
+            return JSONResponse(
+                {"ok": False, "error": "API key cannot contain newlines."}, status_code=400
+            )
+        os.environ[_TAVILY_KEY_ENV] = value
+        if instance_path:
+            _persist_to_env_file(Path(instance_path) / ".env", _TAVILY_KEY_ENV, value)
+        return JSONResponse({"ok": True})
 
     @app.post("/supermemory/api-key")
     def _set_key(payload: ApiKeyPayload) -> JSONResponse:  # type: ignore[misc]

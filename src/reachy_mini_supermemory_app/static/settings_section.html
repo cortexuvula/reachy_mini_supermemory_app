@@ -186,3 +186,66 @@
   })();
   </script>
 </details>
+
+<details id="websearch-section" open style="max-width:960px;margin:1rem auto;padding:1rem 1.25rem;font-family:inherit;color:inherit;border:1px solid rgba(127,127,127,0.25);border-radius:0.5rem;background:rgba(127,127,127,0.05);">
+  <summary style="font-size:1.1rem;font-weight:600;cursor:pointer;margin-bottom:0.25rem;">Web search</summary>
+  <p style="color:#888;margin:0.5rem 0;">Tavily API key used by <code>web_search</code>. Get one at <a href="https://tavily.com" target="_blank" rel="noreferrer">tavily.com</a> — free tier covers 1,000 searches/month.</p>
+  <div id="tv-status" class="tv-status">Checking…</div>
+  <label for="tv-key" style="display:block;margin:0.75rem 0 0.25rem;font-weight:600;">API key</label>
+  <div style="display:flex;gap:0.5rem;align-items:stretch;">
+    <input id="tv-key" type="password" autocomplete="off" placeholder="tvly-..." style="flex:1;padding:0.5rem;font-size:1rem;box-sizing:border-box;" />
+    <button id="tv-save" style="padding:0.5rem 1rem;font-size:1rem;cursor:pointer;">Save</button>
+  </div>
+
+  <style>
+    #websearch-section .tv-status { margin-top:0.5rem;padding:0.5rem 0.75rem;border-radius:0.25rem; }
+    #websearch-section .tv-ok    { background:#d1f0d1;color:#1e5e1e; }
+    #websearch-section .tv-err   { background:#f0d1d1;color:#5e1e1e; }
+    #websearch-section .tv-info  { background:#e6e6e6;color:#333; }
+  </style>
+  <script>
+  (function () {
+    const $ = (id) => document.getElementById(id);
+    const statusEl = $("tv-status");
+    const keyEl    = $("tv-key");
+    const saveBtn  = $("tv-save");
+
+    async function refresh() {
+      try {
+        const j = await (await fetch("/supermemory/tavily-status")).json();
+        statusEl.className = "tv-status " + (j.configured ? "tv-ok" : "tv-err");
+        statusEl.textContent = j.configured ? "Tavily API key is configured." : "No Tavily API key set — web_search will return an error.";
+      } catch (e) {
+        statusEl.className = "tv-status tv-err";
+        statusEl.textContent = "Could not reach settings backend.";
+      }
+    }
+
+    saveBtn.addEventListener("click", async () => {
+      const key = keyEl.value.trim();
+      if (!key) return;
+      saveBtn.disabled = true;
+      try {
+        const j = await (
+          await fetch("/supermemory/tavily-key", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ key }),
+          })
+        ).json();
+        if (j.ok) {
+          keyEl.value = "";
+          await refresh();
+        } else {
+          statusEl.className = "tv-status tv-err";
+          statusEl.textContent = j.error || "Save failed.";
+        }
+      } finally {
+        saveBtn.disabled = false;
+      }
+    });
+
+    refresh();
+  })();
+  </script>
+</details>
