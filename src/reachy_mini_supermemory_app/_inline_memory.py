@@ -82,13 +82,34 @@ def total_chars(entries: List[str]) -> int:
 
 
 def render_block() -> str:
-    """Render the inline memory as a labeled bullet block, or empty when nothing stored."""
+    """Render the inline memory as a labeled bullet block, or empty when nothing stored.
+
+    Enforces ``char_limit()`` at render time so a manually-edited JSON or a
+    post-hoc-lowered limit can't blow up the system prompt. Writes already
+    refuse to exceed the cap, so this only fires defensively.
+    """
     entries = load_entries()
     if not entries:
         return ""
-    lines = ["=== Things Reachy already knows about this user (always remember) ==="]
-    lines.extend(f"- {entry}" for entry in entries)
-    lines.append("=== end of memory ===")
+    header = "=== Things Reachy already knows about this user (always remember) ==="
+    footer = "=== end of memory ==="
+    limit = char_limit()
+    lines = [header]
+    used = len(header) + len(footer) + 1  # +1 for the newline between header and footer
+    kept = 0
+    for entry in entries:
+        line = f"- {entry}"
+        # +1 accounts for the newline we'll add when joining.
+        if used + len(line) + 1 > limit:
+            break
+        lines.append(line)
+        used += len(line) + 1
+        kept += 1
+    omitted = len(entries) - kept
+    if omitted > 0:
+        suffix = "y" if omitted == 1 else "ies"
+        lines.append(f"- … ({omitted} more entr{suffix} omitted; over {limit}-char inline memory limit)")
+    lines.append(footer)
     return "\n".join(lines)
 
 
@@ -113,6 +134,15 @@ def add_entry(content: str) -> Dict[str, Any]:
 
 
 def replace_entry(old_text: str, content: str) -> Dict[str, Any]:
+    """Replace a single entry whose text contains ``old_text``.
+
+    Errors if ``old_text`` matches more than one entry — previously, an
+    ambiguous match silently rewrote both to the same content (the LLM would
+    accidentally collapse "Daughter Mia, 7" and "Daughter Mira, 5" into the
+    same line if it used "Daughter" as old_text). The error response includes
+    the matching entries so the model can retry with a more specific
+    substring.
+    """
     old_text = (old_text or "").strip()
     content = (content or "").strip()
     if not old_text:
@@ -125,8 +155,15 @@ def replace_entry(old_text: str, content: str) -> Dict[str, Any]:
         matches = [i for i, e in enumerate(entries) if old_text in e]
         if not matches:
             return {"error": f"no entry contains {old_text!r}"}
-        for i in matches:
-            entries[i] = content
+        if len(matches) > 1:
+            return {
+                "error": (
+                    f"{len(matches)} entries contain {old_text!r}; refine old_text "
+                    "to uniquely identify the one to replace."
+                ),
+                "matches": [entries[i] for i in matches],
+            }
+        entries[matches[0]] = content
         used = total_chars(entries)
         limit = char_limit()
         if used > limit:
@@ -139,7 +176,7 @@ def replace_entry(old_text: str, content: str) -> Dict[str, Any]:
         _save_unsafe(path, entries)
         return {
             "ok": True,
-            "replaced": len(matches),
+            "replaced": 1,
             "entries": entries,
             "chars_used": used,
             "char_limit": limit,

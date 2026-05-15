@@ -65,6 +65,7 @@ class SaveMemory(Tool):
             return result
 
         memories = result.get("memories") or []
-        memory_id = memories[0].get("id") if memories else None
+        first = memories[0] if memories else None
+        memory_id = first.get("id") if isinstance(first, dict) else None
         logger.info("save_memory ok: id=%s kind=%s", memory_id, kind)
         return {"saved": True, "memory_id": memory_id}

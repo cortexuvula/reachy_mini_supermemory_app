@@ -8,15 +8,16 @@ from unittest.mock import MagicMock
 
 import pytest
 from reachy_mini_supermemory_app import _privacy_mode as pm
+from reachy_mini_supermemory_app._testing import reset_privacy_state
 
 
 @pytest.fixture(autouse=True)
 def _reset() -> Any:
-    pm._reset_for_tests()
+    reset_privacy_state()
     yield
     # Also reset on the way out so the module-level flag doesn't leak into
     # later test modules (auto-digest reads is_privacy_active()).
-    pm._reset_for_tests()
+    reset_privacy_state()
 
 
 def _make_controller(

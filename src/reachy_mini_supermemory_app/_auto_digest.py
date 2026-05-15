@@ -17,13 +17,15 @@ import json
 import logging
 import os
 import re
-import sys
 import threading
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
+
+from ._log_utils import startup_log
+from ._supermemory_client import _client_for_current_loop
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +34,9 @@ IDLE_MINUTES_ENV = "SUPERMEMORY_DIGEST_IDLE_MINUTES"
 MIN_TURNS_ENV = "SUPERMEMORY_DIGEST_MIN_TURNS"
 DIGEST_MODEL_ENV = "SUPERMEMORY_DIGEST_MODEL"
 DIGEST_API_URL_ENV = "SUPERMEMORY_DIGEST_API_URL"
+SUMMARY_MAX_CHARS_ENV = "SUPERMEMORY_DIGEST_SUMMARY_MAX_CHARS"
+TRANSCRIPT_MAX_CHARS_ENV = "SUPERMEMORY_DIGEST_TRANSCRIPT_MAX_CHARS"
+MAX_BUFFER_TURNS_ENV = "SUPERMEMORY_DIGEST_MAX_BUFFER_TURNS"
 HF_TOKEN_ENVS = ("HF_TOKEN", "HUGGINGFACE_TOKEN", "HUGGINGFACEHUB_API_TOKEN")
 
 DEFAULT_IDLE_MINUTES = 10
@@ -39,8 +44,55 @@ DEFAULT_MIN_TURNS = 4
 DEFAULT_DIGEST_MODEL = "meta-llama/Llama-3.1-8B-Instruct"
 DEFAULT_DIGEST_API_URL = "https://router.huggingface.co/v1/chat/completions"
 CHECK_INTERVAL_S = 60.0
-SUMMARY_MAX_CHARS = 600
 SKIP_SENTINEL = "skip"
+
+# Defaults for the env-tunable knobs below. The constants remain module-level
+# so tests can monkeypatch them directly; the helpers consult the env first
+# and fall back to these. Run-time edits via the settings UI therefore take
+# effect without a restart, and unit tests can dial values down without
+# touching the environment.
+SUMMARY_MAX_CHARS = 600
+# Conservative cap on transcript chars sent to the summariser. Llama-3.1-8B
+# handles 128k tokens, but the HF Router default is lower and other free-tier
+# models cap around 8k. ~32 KB ≈ 8k tokens — well within any reasonable model
+# context, and keeps any pathological buffer growth from rejecting the whole
+# digest (which would then re-queue → re-fail forever).
+TRANSCRIPT_MAX_CHARS = 32_000
+# Hard cap on retained turns: when summarisation stays broken (e.g. HF token
+# revoked) we requeue items to retry next idle window, but the buffer must not
+# grow without bound. We drop the oldest turns past this cap — losing the tail
+# is preferable to OOM in a long-running daemon.
+MAX_BUFFER_TURNS = 500
+
+
+def summary_max_chars() -> int:
+    """Cap on chars the digest summariser is allowed to write to supermemory."""
+    return _env_int(SUMMARY_MAX_CHARS_ENV, SUMMARY_MAX_CHARS)
+
+
+def transcript_max_chars() -> int:
+    """Cap on chars fed into the HF Router summarisation call."""
+    return _env_int(TRANSCRIPT_MAX_CHARS_ENV, TRANSCRIPT_MAX_CHARS)
+
+
+def max_buffer_turns() -> int:
+    """Cap on retained transcript turns awaiting a successful digest."""
+    return _env_int(MAX_BUFFER_TURNS_ENV, MAX_BUFFER_TURNS)
+# Hard cap on retained turns: when summarisation stays broken (e.g. HF token
+# revoked) we requeue items to retry next idle window, but the buffer must not
+# grow without bound. We drop the oldest turns past this cap — losing the tail
+# is preferable to OOM in a long-running daemon.
+MAX_BUFFER_TURNS = 500
+
+
+class _SummariseTransientError(RuntimeError):
+    """Raised when summarisation fails for a reason worth retrying (network, 5xx, 429).
+
+    Callers re-queue the drained transcript so a transient HF outage doesn't
+    silently discard a conversation. Permanent failures (missing token, 4xx,
+    bad JSON, skip sentinel) keep the existing 'return None' contract so the
+    items are dropped as intentional.
+    """
 
 _TRANSCRIPT_RE = re.compile(r"role=(\w+)\s+content=(.*)", re.DOTALL)
 _INTERESTING_ROLES = frozenset({"user", "assistant"})
@@ -133,16 +185,55 @@ class TranscriptCapture(logging.Handler):
             self._buffer.clear()
             return items
 
+    def requeue(self, items: List[Tuple[float, str, str]]) -> None:
+        """Re-insert items at the head of the buffer after a transient failure.
+
+        Caps total buffer at ``max_buffer_turns()`` so a stuck summariser
+        can't grow the buffer indefinitely; oldest items are dropped on
+        overflow.
+        """
+        if not items:
+            return
+        cap = max_buffer_turns()
+        with self._lock:
+            combined = items + self._buffer
+            if len(combined) > cap:
+                combined = combined[-cap:]
+            self._buffer = combined
+
 
 def _format_transcript(items: List[Tuple[float, str, str]]) -> str:
-    return "\n".join(f"{role}: {content}" for _ts, role, content in items)
+    """Render the turns as a chat transcript, capped at ``TRANSCRIPT_MAX_CHARS``.
+
+    Truncation drops the OLDEST turns: the digest is meant to capture durable
+    user facts, and recent turns are more likely to contain crisp statements
+    than the warm-up of a long session. A truncation marker is prepended so
+    the summariser knows context is missing and won't over-anchor on the
+    first preserved line.
+    """
+    cap = transcript_max_chars()
+    full = "\n".join(f"{role}: {content}" for _ts, role, content in items)
+    if len(full) <= cap:
+        return full
+    marker = "[...earlier turns elided due to transcript-size cap...]\n"
+    keep = cap - len(marker)
+    # Snap to the next newline so we don't slice mid-line.
+    tail = full[-keep:]
+    nl = tail.find("\n")
+    if nl != -1 and nl < len(tail) - 1:
+        tail = tail[nl + 1:]
+    return marker + tail
 
 
 async def summarise(transcript: str) -> Optional[str]:
     """Call HF's OpenAI-compatible chat-completions endpoint to summarise a transcript.
 
-    Returns ``None`` when summarisation can't run (no token, transport error,
-    bad response) or when the model says ``skip``.
+    Returns ``None`` for intentional drops: no token, malformed/empty model
+    response, or the model returning the ``skip`` sentinel. Raises
+    ``_SummariseTransientError`` for transient transport failures (network,
+    5xx, 429) so the caller can re-queue the transcript and retry next idle
+    window. 4xx responses other than 429 stay as ``None`` because retrying
+    won't fix an auth or schema problem.
     """
     token = _get_token()
     if not token:
@@ -163,12 +254,24 @@ async def summarise(transcript: str) -> Optional[str]:
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(api_url, headers=headers, json=body)
+        client = _client_for_current_loop()
+        # 30 s is generous compared to supermemory's 10 s default — the HF
+        # Router can stall on the first cold inference for a couple of
+        # seconds. Per-request override keeps the rest of the shared client
+        # at its tighter default.
+        response = await client.post(api_url, headers=headers, json=body, timeout=30.0)
     except httpx.HTTPError as e:
         logger.warning("Auto-digest summariser HTTP error: %s", e)
-        return None
+        raise _SummariseTransientError(str(e)) from e
 
+    if response.status_code == 429 or response.status_code >= 500:
+        logger.warning(
+            "Auto-digest summariser %s -> HTTP %s (transient): %s",
+            model,
+            response.status_code,
+            response.text[:200],
+        )
+        raise _SummariseTransientError(f"HTTP {response.status_code}")
     if response.status_code >= 400:
         logger.warning("Auto-digest summariser %s -> HTTP %s: %s", model, response.status_code, response.text[:200])
         return None
@@ -183,7 +286,7 @@ async def summarise(transcript: str) -> Optional[str]:
         return None
     if not text or text.lower() == SKIP_SENTINEL:
         return None
-    return text[:SUMMARY_MAX_CHARS]
+    return text[: summary_max_chars()]
 
 
 async def save_digest(summary: str) -> bool:
@@ -218,29 +321,97 @@ def _digest_loop(
     min_turns: int,
     stop_event: threading.Event,
 ) -> None:
-    """Background loop: wait for idle, summarise, save, repeat."""
-    while not stop_event.is_set():
-        if stop_event.wait(CHECK_INTERVAL_S):
-            return
-        n, elapsed = capture.snapshot()
-        if n < min_turns or elapsed < idle_seconds:
-            continue
-        items = capture.drain()
-        if len(items) < min_turns:
-            continue
+    """Background loop: wait for idle, summarise, save, repeat.
+
+    On transient failure (network blip, HF 5xx, supermemory save error) the
+    drained turns get re-queued so the next idle window retries them — without
+    this, a single failed POST silently discarded the whole conversation.
+
+    Runs a single persistent event loop for the lifetime of the thread (rather
+    than ``asyncio.run`` per iteration). That lets the supermemory_client's
+    per-loop httpx client survive between iterations, so the digest path
+    pools its TCP+TLS connection to ``api.supermemory.ai`` instead of paying a
+    fresh handshake every time.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        while not stop_event.is_set():
+            if stop_event.wait(CHECK_INTERVAL_S):
+                break
+            n, elapsed = capture.snapshot()
+            if n < min_turns or elapsed < idle_seconds:
+                continue
+            items = capture.drain()
+            if len(items) < min_turns:
+                continue
+            try:
+                keep = loop.run_until_complete(_run_digest_once(items))
+            except Exception as e:
+                logger.warning("Auto-digest loop iteration failed: %s", e)
+                keep = False  # unknown failure → safer to retry than to drop
+            if not keep:
+                capture.requeue(items)
+    finally:
+        # Close the cached httpx client before tearing down the loop, so the
+        # pool releases its sockets cleanly instead of getting GC'd later.
+        from ._supermemory_client import aclose_client_for_current_loop
+
         try:
-            asyncio.run(_run_digest_once(items))
-        except Exception as e:
-            logger.warning("Auto-digest loop iteration failed: %s", e)
+            loop.run_until_complete(aclose_client_for_current_loop())
+        except Exception:
+            pass
+        try:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        except Exception:
+            pass
+        loop.close()
 
 
-async def _run_digest_once(items: List[Tuple[float, str, str]]) -> None:
+async def _run_digest_once(items: List[Tuple[float, str, str]]) -> bool:
+    """Summarise + save one batch.
+
+    Returns ``True`` when the items should be discarded (success, or
+    intentional skip — e.g. model returned 'skip', or no HF token), and
+    ``False`` when the caller should re-queue them for a retry on the next
+    idle window (transient HF / supermemory failure).
+    """
     transcript = _format_transcript(items)
-    summary = await summarise(transcript)
+    try:
+        summary = await summarise(transcript)
+    except _SummariseTransientError as e:
+        logger.info("Auto-digest summariser unavailable (%s); re-queuing %d turns", e, len(items))
+        return False
     if not summary:
         logger.info("Auto-digest produced no summary for %d turns; nothing saved", len(items))
-        return
-    await save_digest(summary)
+        return True
+    saved = await save_digest(summary)
+    if not saved:
+        logger.info("Auto-digest save failed; re-queuing %d turns", len(items))
+        return False
+    return True
+
+
+_TRANSCRIPT_PROBE_USER = "__supermemory_probe_user__"
+_TRANSCRIPT_PROBE_CONTENT = "__probe_content__"
+
+
+def _probe_transcript_regex() -> bool:
+    """Return True if ``_TRANSCRIPT_RE`` matches the documented upstream log format.
+
+    Upstream emits per-turn log lines like ``role=user content=<text>`` on the
+    ``reachy_mini_conversation_app.console`` logger; ``_TRANSCRIPT_RE`` parses
+    that. If upstream ever changes the format (added quoting, structured
+    record, new field separator), auto-digest would silently buffer nothing.
+    This probe verifies the assumption against the literal format the regex
+    expects so a drift fails LOUDLY at install instead of producing zero
+    digests over weeks.
+    """
+    sample = f"role={_TRANSCRIPT_PROBE_USER} content={_TRANSCRIPT_PROBE_CONTENT}"
+    match = _TRANSCRIPT_RE.match(sample)
+    if match is None:
+        return False
+    role, content = match.group(1), match.group(2).strip()
+    return role == _TRANSCRIPT_PROBE_USER and content == _TRANSCRIPT_PROBE_CONTENT
 
 
 def install(target_logger_name: str = "reachy_mini_conversation_app.console") -> Optional[TranscriptCapture]:
@@ -250,6 +421,16 @@ def install(target_logger_name: str = "reachy_mini_conversation_app.console") ->
     """
     if not is_enabled():
         return None
+    if not _probe_transcript_regex():
+        # Loud failure: if the regex has drifted (someone edited it, upstream
+        # changed format and we adapted the regex incorrectly), the install
+        # banner should tell the operator instead of letting the daemon
+        # appear to work while quietly capturing nothing.
+        startup_log(
+            "Auto-digest WARNING: transcript regex self-probe failed — "
+            "log format may have drifted; capture may produce empty digests",
+            logger=logger,
+        )
     target = logging.getLogger(target_logger_name)
     # Idempotent: only one capture per logger.
     for h in target.handlers:
@@ -268,13 +449,9 @@ def install(target_logger_name: str = "reachy_mini_conversation_app.console") ->
         daemon=True,
     )
     thread.start()
-    # Use stderr + flush so the line appears in the systemd journal immediately.
-    # logger.info() would be dropped (root logger isn't configured at this point),
-    # and stdout is block-buffered when systemd captures it via a pipe.
-    print(
+    startup_log(
         f"Auto-digest enabled: idle={idle_seconds}s, min_turns={min_turns}, "
         f"model={os.environ.get(DIGEST_MODEL_ENV, DEFAULT_DIGEST_MODEL)}",
-        file=sys.stderr,
-        flush=True,
+        logger=logger,
     )
     return capture

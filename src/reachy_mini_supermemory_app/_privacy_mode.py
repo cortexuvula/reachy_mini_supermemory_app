@@ -18,10 +18,11 @@ from __future__ import annotations
 import logging
 import math
 import os
-import sys
 import threading
 import time
 from typing import Any, Callable, Optional, Tuple
+
+from ._log_utils import startup_log
 
 logger = logging.getLogger(__name__)
 
@@ -268,18 +269,18 @@ class PrivacyMode:
 def _patch_moves_manager_for_privacy() -> None:
     """Force antenna writes to PRIVACY_POSE while privacy is active.
 
-    Upstream's MovementManager._issue_control_command (the single set_target
-    call point — line 851 of moves.py) writes head + antennas + body_yaw
-    every tick at ~100 Hz. Our 20 Hz on_tick can't reliably win that race
-    — idle breathing, emotes, and the listening-antennas blend keep
-    overriding our PRIVACY_POSE. Patching the single write point so that
-    privacy ALWAYS wins is deterministic and only ever costs a function
-    call when privacy is off (the flag check returns immediately).
+    Upstream's ``MovementManager._issue_control_command`` is the single
+    set_target call point — it writes head + antennas + body_yaw every tick
+    at ~100 Hz. Our 20 Hz on_tick can't reliably win that race — idle
+    breathing, emotes, and the listening-antennas blend keep overriding our
+    PRIVACY_POSE. Patching the single write point so that privacy ALWAYS
+    wins is deterministic and only ever costs a function call when privacy
+    is off (the flag check returns immediately).
     """
     try:
         from reachy_mini_conversation_app import moves as _moves  # type: ignore[import-not-found]
     except Exception as e:
-        print(f"Privacy patch: cannot import moves module: {e}", file=sys.stderr, flush=True)
+        startup_log(f"Privacy patch: cannot import moves module: {e}", logger=logger)
         return
 
     # NB the class is ``MovementManager`` (the file is ``moves.py``). The
@@ -287,11 +288,11 @@ def _patch_moves_manager_for_privacy() -> None:
     # no-op'd — fail loud now if the class disappears or gets renamed.
     cls = getattr(_moves, "MovementManager", None)
     if cls is None:
-        print("Privacy patch: MovementManager class not found in moves module", file=sys.stderr, flush=True)
+        startup_log("Privacy patch: MovementManager class not found in moves module", logger=logger)
         return
     original = getattr(cls, "_issue_control_command", None)
     if original is None:
-        print("Privacy patch: _issue_control_command not found on MovementManager", file=sys.stderr, flush=True)
+        startup_log("Privacy patch: _issue_control_command not found on MovementManager", logger=logger)
         return
     if getattr(original, "_privacy_patched", False):
         return  # already patched, idempotent
@@ -303,7 +304,7 @@ def _patch_moves_manager_for_privacy() -> None:
 
     patched._privacy_patched = True  # type: ignore[attr-defined]
     cls._issue_control_command = patched
-    print("Privacy patch: MovementManager._issue_control_command intercepted", file=sys.stderr, flush=True)
+    startup_log("Privacy patch: MovementManager._issue_control_command intercepted", logger=logger)
 
 
 def install(mini: Any) -> Optional[PrivacyMode]:
@@ -313,15 +314,11 @@ def install(mini: Any) -> Optional[PrivacyMode]:
     _patch_moves_manager_for_privacy()
     pm = PrivacyMode(mini)
     pm.start()
-    # stderr + flush so the line lands in the systemd journal immediately —
-    # logger.info would be dropped at this point (root logger isn't yet
-    # configured) and stdout is block-buffered under the daemon's pipe.
     deg = _env_float(DEVIATION_DEG_ENV, DEFAULT_DEVIATION_DEG)
     debounce = _env_int(DEBOUNCE_MS_ENV, DEFAULT_DEBOUNCE_MS)
-    print(
+    startup_log(
         f"Privacy mode enabled: deviation={deg}°, debounce={debounce}ms, poll={int(POLL_INTERVAL_S*1000)}ms",
-        file=sys.stderr,
-        flush=True,
+        logger=logger,
     )
     return pm
 

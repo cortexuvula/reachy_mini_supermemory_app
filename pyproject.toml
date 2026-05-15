@@ -11,6 +11,13 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 dependencies = [
+  # Pulled from main; the runtime monkey-patches in _patches.py + _privacy_mode.py
+  # reach into specific upstream symbols (ServerVad, LOCKED_PROFILE,
+  # get_session_instructions, PersonalityUI._list_personalities,
+  # MovementManager._issue_control_command). When upstream releases a refactor,
+  # apply_all_patches() emits a "patches applied: N/M" roll-up at startup so
+  # operators see which ones survived the version bump. If you pin this, also
+  # update the supported-upstream commit in the README.
   "reachy_mini_conversation_app @ git+https://github.com/pollen-robotics/reachy_mini_conversation_app",
   "httpx>=0.27",
 ]

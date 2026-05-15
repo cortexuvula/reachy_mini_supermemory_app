@@ -10,8 +10,8 @@ import pytest
 from reachy_mini_supermemory_app._supermemory_client import (
     RECALL_EXCLUDED_TAGS_ENV,
     RECALL_TAGS_ENV,
-    _reset_tag_cache_for_tests,
 )
+from reachy_mini_supermemory_app._testing import reset_supermemory_tag_cache
 from recall_memory import (  # type: ignore[import-not-found]
     DEFAULT_LIMIT,
     MAX_LIMIT,
@@ -23,21 +23,32 @@ from recall_memory import (  # type: ignore[import-not-found]
 
 @pytest.fixture(autouse=True)
 def _clean_tag_cache() -> None:
-    _reset_tag_cache_for_tests()
+    reset_supermemory_tag_cache()
 
 
 def _patched_post_json(mock: AsyncMock) -> ExitStack:
-    """Patch post_json in both modules so search calls share one mock."""
+    """Patch post_json everywhere the recall path could hit it.
+
+    Three patch sites: the module-level facade, the per-tool import in
+    recall_memory, and the singleton's method (discover_container_tags uses
+    ``self`` after the SupermemoryClient class refactor).
+    """
     stack = ExitStack()
     stack.enter_context(patch("recall_memory.post_json", new=mock))
     stack.enter_context(patch("reachy_mini_supermemory_app._supermemory_client.post_json", new=mock))
+    stack.enter_context(
+        patch("reachy_mini_supermemory_app._supermemory_client._default_client.post_json", new=mock)
+    )
     return stack
 
 
 def _patched_get_json(mock: AsyncMock) -> ExitStack:
-    """Patch get_json in the client where discovery lives."""
+    """Patch get_json on both the module facade and the singleton's method."""
     stack = ExitStack()
     stack.enter_context(patch("reachy_mini_supermemory_app._supermemory_client.get_json", new=mock))
+    stack.enter_context(
+        patch("reachy_mini_supermemory_app._supermemory_client._default_client.get_json", new=mock)
+    )
     return stack
 
 
@@ -207,3 +218,63 @@ async def test_resolve_recall_tags_handles_discovery_error(monkeypatch: pytest.M
         with patch("recall_memory.derive_container_tag", return_value="reachy-mini:supermemory"):
             tags = await _resolve_recall_tags()
     assert tags == ["reachy-mini:supermemory"]
+
+
+@pytest.mark.asyncio
+async def test_tag_discovery_negative_caches_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed /container-tags/list response must not re-hit the API on every recall.
+
+    Before the negative-cache fix, an auth error or outage meant one tag-list
+    round-trip per recall_memory call (a tight feedback loop with the model
+    asking for memories).
+    """
+    from reachy_mini_supermemory_app import _supermemory_client as smc
+
+    mock = AsyncMock(return_value={"error": "401 unauthorized"})
+    with _patched_get_json(mock):
+        first = await smc.discover_container_tags()
+        second = await smc.discover_container_tags()
+    assert first == []
+    assert second == []
+    # Two recalls, but the API was only hit once thanks to the negative cache.
+    assert mock.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_tag_discovery_negative_cache_expires(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Negative cache must release after the short TTL so recovery is fast."""
+    from reachy_mini_supermemory_app import _supermemory_client as smc
+
+    fake_now = {"t": 1000.0}
+    monkeypatch.setattr(smc.time, "monotonic", lambda: fake_now["t"])
+
+    mock = AsyncMock(return_value={"error": "503 service unavailable"})
+    with _patched_get_json(mock):
+        await smc.discover_container_tags()  # caches negative
+        # Inside the negative TTL window: still cached.
+        fake_now["t"] += smc.TAG_CACHE_NEGATIVE_TTL_S - 1
+        await smc.discover_container_tags()
+        assert mock.await_count == 1
+        # Past the TTL: cache expires, API is hit again.
+        fake_now["t"] += 2
+        await smc.discover_container_tags()
+        assert mock.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_tag_discovery_caches_successful_empty_with_long_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 200 OK with zero tags (new account) must use the LONG TTL, not the short one."""
+    from reachy_mini_supermemory_app import _supermemory_client as smc
+
+    fake_now = {"t": 1000.0}
+    monkeypatch.setattr(smc.time, "monotonic", lambda: fake_now["t"])
+
+    mock = AsyncMock(return_value=[])  # successful but empty
+    with _patched_get_json(mock):
+        await smc.discover_container_tags()
+        # Way past the SHORT TTL — long TTL must still be in effect.
+        fake_now["t"] += smc.TAG_CACHE_NEGATIVE_TTL_S * 2
+        await smc.discover_container_tags()
+    assert mock.await_count == 1

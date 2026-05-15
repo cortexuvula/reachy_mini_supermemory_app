@@ -43,9 +43,11 @@ class ManageMemory(Tool):
                 "type": "string",
                 "enum": ["add", "replace", "remove", "list"],
                 "description": (
-                    "add: append a new entry. replace: find an existing entry containing old_text "
-                    "and swap it for content. remove: delete entries containing old_text. list: see "
-                    "current entries before deciding what to change."
+                    "add: append a new entry. replace: find the SINGLE existing entry containing "
+                    "old_text and swap it for content — if old_text matches more than one entry, "
+                    "this returns an error with the matching entries so you can refine old_text. "
+                    "remove: delete entries containing old_text. list: see current entries before "
+                    "deciding what to change."
                 ),
             },
             "content": {
@@ -54,7 +56,12 @@ class ManageMemory(Tool):
             },
             "old_text": {
                 "type": "string",
-                "description": "Substring to match against existing entries. Required for replace and remove.",
+                "description": (
+                    "Substring to match against existing entries. Required for replace and remove. "
+                    "For replace, must uniquely identify exactly one entry; pick something distinctive "
+                    "(a name, a specific number) rather than a generic word like 'Daughter' that may "
+                    "match multiple."
+                ),
             },
         },
         "required": ["action"],

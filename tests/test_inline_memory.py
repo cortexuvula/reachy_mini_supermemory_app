@@ -93,6 +93,19 @@ def test_replace_entry_errors_when_no_match(memory_path: Path) -> None:
     assert load_entries() == ["Existing fact."]
 
 
+def test_replace_entry_errors_on_ambiguous_match(memory_path: Path) -> None:
+    """Previously collapsed both entries to the same content; now must refuse."""
+    add_entry("Daughter Mia, 7")
+    add_entry("Daughter Mira, 5")
+    result = replace_entry("Daughter", "Daughter (unspecified)")
+    assert "error" in result
+    # The matching entries are returned so the model can refine.
+    assert "matches" in result
+    assert set(result["matches"]) == {"Daughter Mia, 7", "Daughter Mira, 5"}
+    # Nothing changed on disk.
+    assert load_entries() == ["Daughter Mia, 7", "Daughter Mira, 5"]
+
+
 def test_replace_entry_requires_old_text_and_content(memory_path: Path) -> None:
     add_entry("anything")
     assert "error" in replace_entry("", "replacement")
@@ -131,6 +144,40 @@ def test_render_block_uses_bullets_with_delimiters(memory_path: Path) -> None:
     assert "- User's name is Andre." in rendered
     assert "- User has a dog named Charlie." in rendered
     assert rendered.rstrip().endswith("=== end of memory ===")
+
+
+def test_render_block_truncates_when_over_char_limit(
+    monkeypatch: pytest.MonkeyPatch, memory_path: Path
+) -> None:
+    """Render must respect char_limit even when the on-disk file exceeds it.
+
+    Writes refuse to push the store over the limit, but a manual JSON edit or a
+    post-hoc-lowered limit can leave it over — render shouldn't then dump the
+    whole thing into the system prompt.
+    """
+    # Bypass the write-time cap by lowering the limit after the entries are saved.
+    add_entry("a" * 80)
+    add_entry("b" * 80)
+    add_entry("c" * 80)
+    monkeypatch.setenv(INLINE_MEMORY_CHAR_LIMIT_ENV, "150")
+
+    rendered = render_block()
+    assert len(rendered) <= 200  # limit + small fudge for omission notice
+    assert "omitted" in rendered
+    assert rendered.startswith("=== Things Reachy already knows")
+    assert rendered.rstrip().endswith("=== end of memory ===")
+
+
+def test_render_block_singular_when_one_entry_omitted(
+    monkeypatch: pytest.MonkeyPatch, memory_path: Path
+) -> None:
+    add_entry("a" * 80)
+    add_entry("b" * 80)
+    # Header (67) + footer (22) + first bullet (83) ≈ 173 → fits in 200,
+    # second bullet would push to ~256 → omitted.
+    monkeypatch.setenv(INLINE_MEMORY_CHAR_LIMIT_ENV, "200")
+    rendered = render_block()
+    assert "1 more entry" in rendered  # singular
 
 
 def test_load_entries_recovers_from_corrupt_file(memory_path: Path) -> None:

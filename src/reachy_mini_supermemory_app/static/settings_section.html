@@ -1,0 +1,188 @@
+<details id="supermemory-section" open style="max-width:960px;margin:1rem auto;padding:1rem 1.25rem;font-family:inherit;color:inherit;border:1px solid rgba(127,127,127,0.25);border-radius:0.5rem;background:rgba(127,127,127,0.05);">
+  <summary style="font-size:1.1rem;font-weight:600;cursor:pointer;margin-bottom:0.25rem;">Supermemory</summary>
+  <p style="color:#888;margin:0.5rem 0;">API key used by <code>save_memory</code> and <code>recall_memory</code>. Get one at <a href="https://supermemory.ai" target="_blank" rel="noreferrer">supermemory.ai</a>.</p>
+  <div id="sm-status" class="sm-status">Checking…</div>
+  <label for="sm-key" style="display:block;margin:0.75rem 0 0.25rem;font-weight:600;">API key</label>
+  <div style="display:flex;gap:0.5rem;align-items:stretch;">
+    <input id="sm-key" type="password" autocomplete="off" placeholder="sk-..." style="flex:1;padding:0.5rem;font-size:1rem;box-sizing:border-box;" />
+    <button id="sm-save" style="padding:0.5rem 1rem;font-size:1rem;cursor:pointer;">Save</button>
+  </div>
+
+  <h3 style="font-size:1rem;margin:1.25rem 0 0.5rem;">Recall scope</h3>
+  <p style="color:#888;margin:0.25rem 0;">Tags <code>recall_memory</code> searches across. Saves always go to <code>reachy-mini:&lt;profile&gt;</code>. Uncheck any tag you don't want recall to read.</p>
+  <div id="sm-tags-status" class="sm-status sm-info">Loading tags…</div>
+  <ul id="sm-tag-list" style="list-style:none;padding:0;margin:0.5rem 0;max-height:200px;overflow:auto;"></ul>
+  <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+    <button id="sm-apply-tags" style="padding:0.4rem 0.9rem;cursor:pointer;">Apply</button>
+    <button id="sm-refresh-tags" style="padding:0.4rem 0.9rem;cursor:pointer;background:transparent;border:1px solid #888;">Refresh tags</button>
+  </div>
+
+  <style>
+    #supermemory-section .sm-status { margin-top:0.5rem;padding:0.5rem 0.75rem;border-radius:0.25rem; }
+    #supermemory-section .sm-ok    { background:#d1f0d1;color:#1e5e1e; }
+    #supermemory-section .sm-err   { background:#f0d1d1;color:#5e1e1e; }
+    #supermemory-section .sm-info  { background:#e6e6e6;color:#333; }
+    #supermemory-section #sm-tag-list li {
+      padding:0.35rem 0;
+      border-bottom:1px solid rgba(127,127,127,0.2);
+      display:flex;
+      align-items:center;
+      gap:0.5rem;
+    }
+    #supermemory-section #sm-tag-list code {
+      font-family:ui-monospace,monospace;
+      font-size:0.95rem;
+    }
+  </style>
+
+  <script>
+  (function () {
+    const $ = (id) => document.getElementById(id);
+    const statusEl   = $("sm-status");
+    const keyEl      = $("sm-key");
+    const saveBtn    = $("sm-save");
+    const tagsStatusEl = $("sm-tags-status");
+    const tagListEl    = $("sm-tag-list");
+    const applyBtn     = $("sm-apply-tags");
+    const refreshBtn   = $("sm-refresh-tags");
+
+    async function refresh() {
+      try {
+        const j = await (await fetch("/supermemory/status")).json();
+        statusEl.className = "sm-status " + (j.configured ? "sm-ok" : "sm-err");
+        statusEl.textContent = j.configured ? "API key is configured." : "No API key set.";
+      } catch (e) {
+        statusEl.className = "sm-status sm-err";
+        statusEl.textContent = "Could not reach settings backend.";
+      }
+    }
+
+    function renderTags(p) {
+      tagListEl.replaceChildren();
+      if (p.configured === false) {
+        tagsStatusEl.className = "sm-status sm-info";
+        tagsStatusEl.textContent = "Set an API key first.";
+        applyBtn.disabled = true;
+        refreshBtn.disabled = true;
+        return;
+      }
+      if (p.pinned) {
+        tagsStatusEl.className = "sm-status sm-info";
+        tagsStatusEl.textContent = "Pinned via SUPERMEMORY_RECALL_CONTAINER_TAGS: " + p.pinned.join(", ");
+        applyBtn.disabled = true;
+        refreshBtn.disabled = true;
+        return;
+      }
+      const discovered = p.discovered || [];
+      const excluded = new Set(p.excluded || []);
+      if (!discovered.length) {
+        tagsStatusEl.className = "sm-status sm-info";
+        tagsStatusEl.textContent = "No tags discovered yet.";
+        applyBtn.disabled = true;
+        refreshBtn.disabled = false;
+        return;
+      }
+      tagsStatusEl.className = "sm-status sm-ok";
+      tagsStatusEl.textContent =
+        discovered.length + " tag" + (discovered.length === 1 ? "" : "s") + " discovered.";
+      for (const tag of discovered) {
+        const li = document.createElement("li");
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.id = "sm-tag-" + tag;
+        cb.checked = !excluded.has(tag);
+        cb.dataset.tag = tag;
+        const lbl = document.createElement("label");
+        lbl.htmlFor = cb.id;
+        lbl.style.fontWeight = "normal";
+        lbl.style.margin = "0";
+        const c = document.createElement("code");
+        c.textContent = tag;
+        lbl.appendChild(c);
+        li.appendChild(cb);
+        li.appendChild(lbl);
+        tagListEl.appendChild(li);
+      }
+      applyBtn.disabled = false;
+      refreshBtn.disabled = false;
+    }
+
+    async function loadTags() {
+      try {
+        renderTags(await (await fetch("/supermemory/tags")).json());
+      } catch (e) {
+        tagsStatusEl.className = "sm-status sm-err";
+        tagsStatusEl.textContent = "Could not load tags.";
+      }
+    }
+
+    saveBtn.addEventListener("click", async () => {
+      const key = keyEl.value.trim();
+      if (!key) return;
+      saveBtn.disabled = true;
+      try {
+        const j = await (
+          await fetch("/supermemory/api-key", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ key }),
+          })
+        ).json();
+        if (j.ok) {
+          keyEl.value = "";
+          await refresh();
+          await loadTags();
+        } else {
+          statusEl.className = "sm-status sm-err";
+          statusEl.textContent = j.error || "Save failed.";
+        }
+      } finally {
+        saveBtn.disabled = false;
+      }
+    });
+
+    applyBtn.addEventListener("click", async () => {
+      const cbs = tagListEl.querySelectorAll("input[type=checkbox]");
+      const excluded = [];
+      cbs.forEach((cb) => { if (!cb.checked) excluded.push(cb.dataset.tag); });
+      applyBtn.disabled = true;
+      try {
+        const j = await (
+          await fetch("/supermemory/tags", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ excluded }),
+          })
+        ).json();
+        tagsStatusEl.className = "sm-status " + (j.ok ? "sm-ok" : "sm-err");
+        tagsStatusEl.textContent = j.ok
+          ? (excluded.length === 0 ? "Saved — searching all tags." : "Saved — excluding " + excluded.length + ".")
+          : (j.error || "Save failed.");
+      } catch (e) {
+        tagsStatusEl.className = "sm-status sm-err";
+        tagsStatusEl.textContent = "Save failed.";
+      } finally {
+        applyBtn.disabled = false;
+      }
+    });
+
+    refreshBtn.addEventListener("click", async () => {
+      refreshBtn.disabled = true;
+      tagsStatusEl.className = "sm-status sm-info";
+      tagsStatusEl.textContent = "Re-scanning…";
+      try {
+        await fetch("/supermemory/tags/refresh", { method: "POST" });
+        await loadTags();
+      } catch (e) {
+        tagsStatusEl.className = "sm-status sm-err";
+        tagsStatusEl.textContent = "Refresh failed.";
+      } finally {
+        refreshBtn.disabled = false;
+      }
+    });
+
+    refresh();
+    loadTags();
+  })();
+  </script>
+</details>

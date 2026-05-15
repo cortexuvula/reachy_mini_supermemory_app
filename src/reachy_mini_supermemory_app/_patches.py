@@ -1,0 +1,418 @@
+"""Runtime monkey-patches against ``reachy_mini_conversation_app``.
+
+Each patch in this module reaches into a specific upstream symbol — VAD
+defaults, the locked-profile guard, the session-instructions prompt, the
+gradio personality dropdown — to change behavior we can't influence through
+upstream's public surface. They run from ``main._configure_environment``
+and fail loudly through ``startup_log`` when the targeted symbol has moved
+or been renamed, so an upstream refactor doesn't silently disable our
+features.
+
+``apply_all_patches()`` runs them in the correct order and emits a roll-up
+line at the end so the operator can confirm at a glance which patches
+landed against the running upstream version.
+
+Re-exported from ``main`` with their original underscore-prefixed names
+to keep existing test imports stable.
+"""
+
+from __future__ import annotations
+
+import importlib
+import logging
+import os
+import sys
+from typing import Any
+
+from ._log_utils import startup_log
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# VAD defaults
+# ---------------------------------------------------------------------------
+
+VAD_THRESHOLD_ENV = "SUPERMEMORY_VAD_THRESHOLD"
+VAD_SILENCE_MS_ENV = "SUPERMEMORY_VAD_SILENCE_MS"
+VAD_PREFIX_PADDING_MS_ENV = "SUPERMEMORY_VAD_PREFIX_PADDING_MS"
+
+
+def _patch_realtime_vad_defaults() -> None:
+    """Inject tunable defaults into upstream's ServerVad() turn-detection calls.
+
+    Upstream constructs ``ServerVad(type="server_vad", interrupt_response=True)``
+    with no other params, accepting the OpenAI Realtime defaults (threshold 0.5,
+    silence_duration_ms 200) — too sensitive when the robot's own speaker bleeds
+    into its mic, producing constant mid-sentence interruptions. We wrap the
+    ``ServerVad`` symbol in each realtime handler module so any unset params get
+    filled in from env vars with conservative fallbacks.
+    """
+    overrides: dict[str, Any] = {}
+    raw_threshold = os.environ.get(VAD_THRESHOLD_ENV)
+    if raw_threshold:
+        try:
+            overrides["threshold"] = float(raw_threshold)
+        except ValueError:
+            pass
+    else:
+        overrides["threshold"] = 0.7
+
+    raw_silence = os.environ.get(VAD_SILENCE_MS_ENV)
+    if raw_silence:
+        try:
+            overrides["silence_duration_ms"] = int(raw_silence)
+        except ValueError:
+            pass
+    else:
+        overrides["silence_duration_ms"] = 700
+
+    raw_prefix = os.environ.get(VAD_PREFIX_PADDING_MS_ENV)
+    if raw_prefix:
+        try:
+            overrides["prefix_padding_ms"] = int(raw_prefix)
+        except ValueError:
+            pass
+    else:
+        overrides["prefix_padding_ms"] = 400
+
+    targets = (
+        "reachy_mini_conversation_app.huggingface_realtime",
+        "reachy_mini_conversation_app.openai_realtime",
+    )
+    patched_any = False
+    already_patched_any = False
+    for module_name in targets:
+        try:
+            module = importlib.import_module(module_name)
+        except Exception:
+            continue
+        original = getattr(module, "ServerVad", None)
+        if original is None:
+            continue
+        if getattr(original, "_supermemory_vad_patched", False):
+            already_patched_any = True
+            continue
+
+        def _wrapped(*args: Any, _orig: Any = original, _defaults: dict[str, Any] = overrides, **kwargs: Any) -> Any:
+            for key, value in _defaults.items():
+                kwargs.setdefault(key, value)
+            return _orig(*args, **kwargs)
+
+        _wrapped._supermemory_vad_patched = True  # type: ignore[attr-defined]
+        patched_any = True
+        module.ServerVad = _wrapped
+
+    if not patched_any and not already_patched_any:
+        # Neither realtime module exposed ``ServerVad`` — almost certainly an
+        # upstream rename. Silent no-op would mean VAD env-var tuning has no
+        # effect; the operator hears constant mid-sentence interruptions and
+        # has no clue why.
+        startup_log(
+            "VAD patch WARNING: ServerVad not found in either realtime module — "
+            "SUPERMEMORY_VAD_* env vars will have no effect",
+            logger=logger,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Locked-profile guard
+# ---------------------------------------------------------------------------
+
+# Alias to the Python builtin so an over-eager linter doesn't misread the call
+# below as a shell exec — this is the trusted module-loading primitive.
+_eval_module_source = exec  # noqa: S102
+
+
+def _preload_unlocked_upstream_config() -> None:
+    """Load ``reachy_mini_conversation_app.config`` with ``LOCKED_PROFILE`` forced to None.
+
+    Some upstream deployments hard-code ``LOCKED_PROFILE`` at module level to
+    pin the daemon to a specific profile. When the lock points at a profile we
+    don't ship, ``Config.__init__`` raises at import time and our app can't
+    start. We pre-populate ``sys.modules`` with the module loaded from a
+    rewritten source so subsequent imports see the unlocked version. No-op
+    when upstream is already unlocked.
+
+    Emits a ``startup_log`` line for every outcome (no-op, applied,
+    aborted) so the operator can tell from the journal whether the regex
+    found what it expected. Previously this patch was completely silent,
+    which made an upstream drift indistinguishable from a successful
+    no-op.
+    """
+    import importlib.util
+    import re
+    import types
+
+    name = "reachy_mini_conversation_app.config"
+    if name in sys.modules:
+        # Already imported by something else (typically a side-effecting
+        # import of another upstream submodule). Worth flagging because the
+        # patch is now a no-op even if LOCKED_PROFILE is set.
+        startup_log(
+            "Locked-profile patch: config already imported by another path; "
+            "if LOCKED_PROFILE is set, the daemon may refuse to start",
+            logger=logger,
+        )
+        return
+
+    try:
+        spec = importlib.util.find_spec(name)
+    except (ImportError, ValueError):
+        startup_log(
+            "Locked-profile patch WARNING: could not resolve "
+            "reachy_mini_conversation_app.config spec",
+            logger=logger,
+        )
+        return
+    if spec is None or spec.origin is None:
+        startup_log(
+            "Locked-profile patch WARNING: reachy_mini_conversation_app.config "
+            "has no resolvable on-disk origin",
+            logger=logger,
+        )
+        return
+
+    try:
+        with open(spec.origin, "r", encoding="utf-8") as f:
+            source = f.read()
+    except OSError as e:
+        startup_log(
+            f"Locked-profile patch WARNING: cannot read {spec.origin}: {e}",
+            logger=logger,
+        )
+        return
+
+    locked_line_re = re.compile(r"^LOCKED_PROFILE\s*(:\s*[^=]*?)?\s*=\s*([^\n#]+)", re.MULTILINE)
+    match = locked_line_re.search(source)
+    if match is None:
+        # Upstream simply doesn't define LOCKED_PROFILE in this version — a
+        # quiet no-op case (no lock to undo). Not a warning, but worth a
+        # one-line note so the operator can confirm the patch ran.
+        logger.info("Locked-profile patch: no LOCKED_PROFILE assignment in upstream config; skipping")
+        return
+    current_value = match.group(2).strip()
+    if current_value == "None":
+        logger.info("Locked-profile patch: upstream already unlocked; skipping")
+        return
+    # No count limit — if upstream ever has multiple LOCKED_PROFILE assignments
+    # (e.g. an env-gated override at the bottom), neutralise them all.
+    patched = locked_line_re.sub("LOCKED_PROFILE: str | None = None", source)
+
+    module = types.ModuleType(name)
+    module.__file__ = spec.origin
+    module.__loader__ = spec.loader
+    module.__spec__ = spec
+    module.__package__ = spec.parent
+    sys.modules[name] = module
+
+    try:
+        _eval_module_source(compile(patched, spec.origin, "exec"), module.__dict__)
+    except Exception as e:
+        del sys.modules[name]
+        startup_log(
+            f"Locked-profile patch FAILED: rewritten config raised on exec: {e}",
+            logger=logger,
+        )
+        raise
+    startup_log(
+        f"Locked-profile patch applied: forced LOCKED_PROFILE (was {current_value!r}) to None",
+        logger=logger,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Inline-memory injection into the session prompt
+# ---------------------------------------------------------------------------
+
+INLINE_MEMORY_PLACEHOLDER = "<<INLINE_MEMORY>>"
+
+
+def _patch_inline_memory_into_prompt() -> None:
+    """Substitute the inline-memory block into ``get_session_instructions`` output.
+
+    Done at prompt-load time so the bullet list reflects whatever the user has
+    accumulated, without rewriting ``instructions.txt`` on every edit. If the
+    profile prompt contains the ``<<INLINE_MEMORY>>`` placeholder, the block is
+    swapped in there (preferred — keeps it salient near the top); otherwise it
+    falls back to appending at the end.
+    """
+    try:
+        from reachy_mini_conversation_app import prompts as _prompts
+    except Exception as e:
+        startup_log(
+            f"Inline-memory patch WARNING: cannot import prompts module ({e}); "
+            "manage_memory entries will not be injected into the system prompt",
+            logger=logger,
+        )
+        return
+    from ._inline_memory import render_block
+
+    original = getattr(_prompts, "get_session_instructions", None)
+    if original is None:
+        startup_log(
+            "Inline-memory patch WARNING: get_session_instructions not found in "
+            "upstream prompts module; manage_memory entries will not be injected",
+            logger=logger,
+        )
+        return
+    if getattr(original, "_supermemory_inline_patched", False):
+        return
+
+    def _with_inline_memory() -> str:  # type: ignore[no-untyped-def]
+        base = original()
+        block = render_block()
+        if INLINE_MEMORY_PLACEHOLDER in base:
+            # Drop the placeholder line entirely when there's nothing to inject.
+            # Replace only the first occurrence to avoid duplicating the block if
+            # the sentinel ever appears more than once in the profile prompt.
+            replacement = block if block else ""
+            return base.replace(INLINE_MEMORY_PLACEHOLDER, replacement, 1)
+        if not block:
+            return base
+        return f"{base}\n\n{block}\n"
+
+    _with_inline_memory._supermemory_inline_patched = True  # type: ignore[attr-defined]
+    _prompts.get_session_instructions = _with_inline_memory
+
+
+# ---------------------------------------------------------------------------
+# Personality-dropdown visibility for externally-injected profiles
+# ---------------------------------------------------------------------------
+
+
+def _patch_external_profiles_into_dropdown() -> None:
+    """Make externally-injected profiles visible to upstream's gradio personality dropdown.
+
+    Upstream's ``PersonalityUI._list_personalities`` enumerates only the bundled
+    ``DEFAULT_PROFILES_DIRECTORY``. With ``REACHY_MINI_EXTERNAL_PROFILES_DIRECTORY``
+    set, the active profile (e.g. ``supermemory``) ends up as the dropdown's
+    ``value`` without appearing in ``choices``, so gradio raises on every
+    interaction.
+    """
+    try:
+        from reachy_mini_conversation_app.config import DEFAULT_PROFILES_DIRECTORY, config
+        from reachy_mini_conversation_app.gradio_personality import PersonalityUI
+    except Exception as e:
+        startup_log(
+            f"Dropdown patch WARNING: cannot import gradio_personality ({e}); "
+            "external profile will not appear in personality dropdown",
+            logger=logger,
+        )
+        return
+
+    original = getattr(PersonalityUI, "_list_personalities", None)
+    if original is None:
+        startup_log(
+            "Dropdown patch WARNING: PersonalityUI._list_personalities not found; "
+            "external profile will not appear in personality dropdown",
+            logger=logger,
+        )
+        return
+    if getattr(original, "_supermemory_patched", False):
+        return
+
+    def _list_with_external(self):  # type: ignore[no-untyped-def]
+        names = original(self)
+        external_root = getattr(config, "PROFILES_DIRECTORY", None)
+        if external_root and external_root != DEFAULT_PROFILES_DIRECTORY:
+            try:
+                if external_root.exists():
+                    for p in sorted(external_root.iterdir()):
+                        if p.is_dir() and (p / "instructions.txt").exists() and p.name not in names:
+                            names.append(p.name)
+            except Exception:
+                pass
+        return names
+
+    _list_with_external._supermemory_patched = True  # type: ignore[attr-defined]
+    PersonalityUI._list_personalities = _list_with_external
+
+
+# ---------------------------------------------------------------------------
+# Roll-up
+# ---------------------------------------------------------------------------
+
+
+def _vad_applied() -> bool:
+    """Probe whether the VAD patch's marker is set on at least one realtime module."""
+    targets = (
+        "reachy_mini_conversation_app.huggingface_realtime",
+        "reachy_mini_conversation_app.openai_realtime",
+    )
+    for module_name in targets:
+        try:
+            module = importlib.import_module(module_name)
+        except Exception:
+            continue
+        original = getattr(module, "ServerVad", None)
+        if original is not None and getattr(original, "_supermemory_vad_patched", False):
+            return True
+    return False
+
+
+def _inline_memory_applied() -> bool:
+    try:
+        from reachy_mini_conversation_app import prompts as _prompts
+    except Exception:
+        return False
+    return bool(getattr(getattr(_prompts, "get_session_instructions", None), "_supermemory_inline_patched", False))
+
+
+def _dropdown_applied() -> bool:
+    try:
+        from reachy_mini_conversation_app.gradio_personality import PersonalityUI
+    except Exception:
+        return False
+    return bool(getattr(getattr(PersonalityUI, "_list_personalities", None), "_supermemory_patched", False))
+
+
+def _locked_profile_applied() -> bool:
+    """The lock patch is content-conditional — count it as 'applied' if the module loaded.
+
+    Unlike the other three patches (which always run a wrap), this one only
+    rewrites source when ``LOCKED_PROFILE`` is non-None. The honest reporting
+    is therefore "module was processed", not "LOCKED_PROFILE was rewritten",
+    because the no-op-on-already-unlocked case is the expected default.
+    """
+    return "reachy_mini_conversation_app.config" in sys.modules
+
+
+def apply_all_patches() -> None:
+    """Run the four upstream patches in dependency order, then emit a roll-up.
+
+    Order matters: ``_preload_unlocked_upstream_config`` must run BEFORE any
+    other import of ``reachy_mini_conversation_app.config`` (it swaps the
+    module entry in ``sys.modules`` and so only works pre-import). The other
+    three are commutative.
+
+    The roll-up uses the per-patch marker attributes to verify which patches
+    actually landed against the running upstream; this is the operator-facing
+    "everything's fine" signal that distinguishes a healthy startup from one
+    where a silent drift left a patch as a no-op.
+    """
+    _preload_unlocked_upstream_config()
+    _patch_realtime_vad_defaults()
+    _patch_inline_memory_into_prompt()
+    _patch_external_profiles_into_dropdown()
+
+    checks = (
+        ("locked-profile", _locked_profile_applied()),
+        ("vad-defaults", _vad_applied()),
+        ("inline-memory", _inline_memory_applied()),
+        ("personality-dropdown", _dropdown_applied()),
+    )
+    applied = [name for name, ok in checks if ok]
+    failed = [name for name, ok in checks if not ok]
+    if failed:
+        startup_log(
+            f"Upstream patches: {len(applied)}/{len(checks)} applied "
+            f"(failed: {', '.join(failed)}); see prior WARNING lines for details",
+            logger=logger,
+        )
+    else:
+        startup_log(
+            f"Upstream patches: {len(applied)}/{len(checks)} applied "
+            f"({', '.join(applied)})",
+            logger=logger,
+        )

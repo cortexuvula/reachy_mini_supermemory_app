@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import importlib
+import logging
 import os
 import threading
 from pathlib import Path
@@ -17,7 +17,10 @@ from reachy_mini_conversation_app.main import (
 )
 from reachy_mini_conversation_app.utils import parse_args
 
+from ._log_utils import startup_log
 from .settings_ui import mount_supermemory_routes
+
+logger = logging.getLogger(__name__)
 
 PROFILE_NAME = "supermemory"
 
@@ -42,295 +45,44 @@ def _configure_environment() -> None:
     # Must be set BEFORE the preload, because upstream config.py reads these
     # env vars at class-definition time while we're loading it.
     os.environ.setdefault("REACHY_MINI_CUSTOM_PROFILE", PROFILE_NAME)
-    _preload_unlocked_upstream_config()
-    _patch_external_profiles_into_dropdown()
-    _patch_inline_memory_into_prompt()
-    _patch_realtime_vad_defaults()
+    # apply_all_patches runs the four upstream monkey-patches in the right
+    # order (locked-profile preload must come first because it swaps the
+    # config module BEFORE anything else imports it) and emits a one-line
+    # "patches applied: N/M" roll-up at the end. That's the diagnostic the
+    # operator should look for in the journal to confirm compat with the
+    # running upstream version.
+    apply_all_patches()
     # Auto-digest install lives here (not in main()) so it runs for BOTH the
     # CLI launch and the dashboard-managed launch (which calls wrapped_run
     # directly and never enters main()).
     _install_auto_digest()
 
 
-def _persistent_instance_dir() -> Path:
-    """Return the user-config-dir that survives app updates / reinstalls.
-
-    Honours ``XDG_CONFIG_HOME``; falls back to ``~/.config``. The site-packages
-    install directory is unsafe for user settings because the daemon's
-    update flow runs ``pip uninstall`` and reinstalls the package — anything
-    we wrote there can be wiped.
-    """
-    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
-    p = Path(base) / "reachy_mini_supermemory_app"
-    try:
-        p.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        pass
-    return p
+# .env lifecycle lives in ``_env_paths`` so this entry-point file stays
+# focused on bootstrapping. Re-exported with their pre-refactor names to keep
+# the test suite's import surface stable.
+from ._env_paths import (
+    load_package_dotenv as _load_package_dotenv,
+    package_env_path as _package_env_path,
+    persistent_env_path,
+    persistent_instance_dir as _persistent_instance_dir,
+)
 
 
-def _package_env_path() -> Path:
-    return Path(__file__).resolve().parent / ".env"
-
-
-def persistent_env_path() -> Path:
-    """Public for settings_ui.py — the .env file the UI must write to."""
-    return _persistent_instance_dir() / ".env"
-
-
-def _load_package_dotenv() -> None:
-    """Load the persistent .env into os.environ before anything reads env vars.
-
-    Source of truth is ``~/.config/reachy_mini_supermemory_app/.env``. On
-    first run (or in case the persistent file was deleted), we migrate any
-    legacy .env that's still sitting in the install dir. Then we sync the
-    persistent file back to the install dir so upstream's own load_dotenv
-    (which reads ``_get_instance_path().parent / .env`` with override=True)
-    finds the same values and doesn't clobber ours.
-    """
-    persistent = persistent_env_path()
-    legacy = _package_env_path()
-
-    # First-run migration: pull existing install-dir config into the
-    # persistent location so users who already set an API key don't lose it.
-    if not persistent.exists() and legacy.exists():
-        try:
-            persistent.parent.mkdir(parents=True, exist_ok=True)
-            persistent.write_bytes(legacy.read_bytes())
-            try:
-                persistent.chmod(0o600)
-            except Exception:
-                pass
-        except Exception:
-            pass
-
-    if not persistent.exists():
-        return
-
-    try:
-        from dotenv import load_dotenv
-    except Exception:
-        return
-    try:
-        load_dotenv(dotenv_path=str(persistent), override=False)
-    except Exception:
-        pass
-
-    # Sync persistent → install-dir so the upstream conversation_app's
-    # own load_dotenv(instance_path/.env, override=True) reads the SAME
-    # values instead of an empty file (which would no-op) or a stale one
-    # (which would clobber what we just loaded).
-    try:
-        legacy.parent.mkdir(parents=True, exist_ok=True)
-        legacy.write_bytes(persistent.read_bytes())
-        try:
-            legacy.chmod(0o600)
-        except Exception:
-            pass
-    except Exception:
-        pass
-
-
-VAD_THRESHOLD_ENV = "SUPERMEMORY_VAD_THRESHOLD"
-VAD_SILENCE_MS_ENV = "SUPERMEMORY_VAD_SILENCE_MS"
-VAD_PREFIX_PADDING_MS_ENV = "SUPERMEMORY_VAD_PREFIX_PADDING_MS"
-
-
-def _patch_realtime_vad_defaults() -> None:
-    """Inject tunable defaults into upstream's ServerVad() turn-detection calls.
-
-    Upstream constructs ``ServerVad(type="server_vad", interrupt_response=True)``
-    with no other params, accepting the OpenAI Realtime defaults (threshold 0.5,
-    silence_duration_ms 200) — too sensitive when the robot's own speaker bleeds
-    into its mic, producing constant mid-sentence interruptions. We wrap the
-    ``ServerVad`` symbol in each realtime handler module so any unset params get
-    filled in from env vars with conservative fallbacks.
-    """
-    overrides: dict[str, Any] = {}
-    raw_threshold = os.environ.get(VAD_THRESHOLD_ENV)
-    if raw_threshold:
-        try:
-            overrides["threshold"] = float(raw_threshold)
-        except ValueError:
-            pass
-    else:
-        overrides["threshold"] = 0.7
-
-    raw_silence = os.environ.get(VAD_SILENCE_MS_ENV)
-    if raw_silence:
-        try:
-            overrides["silence_duration_ms"] = int(raw_silence)
-        except ValueError:
-            pass
-    else:
-        overrides["silence_duration_ms"] = 700
-
-    raw_prefix = os.environ.get(VAD_PREFIX_PADDING_MS_ENV)
-    if raw_prefix:
-        try:
-            overrides["prefix_padding_ms"] = int(raw_prefix)
-        except ValueError:
-            pass
-    else:
-        overrides["prefix_padding_ms"] = 400
-
-    targets = (
-        "reachy_mini_conversation_app.huggingface_realtime",
-        "reachy_mini_conversation_app.openai_realtime",
-    )
-    for module_name in targets:
-        try:
-            module = importlib.import_module(module_name)
-        except Exception:
-            continue
-        original = getattr(module, "ServerVad", None)
-        if original is None or getattr(original, "_supermemory_vad_patched", False):
-            continue
-
-        def _wrapped(*args: Any, _orig: Any = original, _defaults: dict[str, Any] = overrides, **kwargs: Any) -> Any:
-            for key, value in _defaults.items():
-                kwargs.setdefault(key, value)
-            return _orig(*args, **kwargs)
-
-        _wrapped._supermemory_vad_patched = True  # type: ignore[attr-defined]
-        module.ServerVad = _wrapped
-
-
-# Alias to the Python builtin so an over-eager linter doesn't misread the call
-# below as a shell exec — this is the trusted module-loading primitive.
-_eval_module_source = exec  # noqa: S102
-
-
-def _preload_unlocked_upstream_config() -> None:
-    """Load ``reachy_mini_conversation_app.config`` with ``LOCKED_PROFILE`` forced to None.
-
-    Some upstream deployments hard-code ``LOCKED_PROFILE`` at module level to
-    pin the daemon to a specific profile. When the lock points at a profile we
-    don't ship, ``Config.__init__`` raises at import time and our app can't
-    start. We pre-populate ``sys.modules`` with the module loaded from a
-    rewritten source so subsequent imports see the unlocked version. No-op
-    when upstream is already unlocked.
-    """
-    import importlib.util
-    import re
-    import sys
-    import types
-
-    name = "reachy_mini_conversation_app.config"
-    if name in sys.modules:
-        return  # already imported by something else — too late to swap
-
-    try:
-        spec = importlib.util.find_spec(name)
-    except (ImportError, ValueError):
-        return
-    if spec is None or spec.origin is None:
-        return
-
-    try:
-        with open(spec.origin, "r", encoding="utf-8") as f:
-            source = f.read()
-    except OSError:
-        return
-
-    locked_line_re = re.compile(r"^LOCKED_PROFILE\s*(:\s*[^=]*?)?\s*=\s*([^\n#]+)", re.MULTILINE)
-    match = locked_line_re.search(source)
-    if match is None:
-        return
-    current_value = match.group(2).strip()
-    if current_value == "None":
-        return  # already unlocked
-    # No count limit — if upstream ever has multiple LOCKED_PROFILE assignments
-    # (e.g. an env-gated override at the bottom), neutralise them all.
-    patched = locked_line_re.sub("LOCKED_PROFILE: str | None = None", source)
-
-    module = types.ModuleType(name)
-    module.__file__ = spec.origin
-    module.__loader__ = spec.loader
-    module.__spec__ = spec
-    module.__package__ = spec.parent
-    sys.modules[name] = module
-
-    try:
-        _eval_module_source(compile(patched, spec.origin, "exec"), module.__dict__)
-    except Exception:
-        del sys.modules[name]
-        raise
-
-
-INLINE_MEMORY_PLACEHOLDER = "<<INLINE_MEMORY>>"
-
-
-def _patch_inline_memory_into_prompt() -> None:
-    """Substitute the inline-memory block into ``get_session_instructions`` output.
-
-    Done at prompt-load time so the bullet list reflects whatever the user has
-    accumulated, without rewriting ``instructions.txt`` on every edit. If the
-    profile prompt contains the ``<<INLINE_MEMORY>>`` placeholder, the block is
-    swapped in there (preferred — keeps it salient near the top); otherwise it
-    falls back to appending at the end.
-    """
-    try:
-        from reachy_mini_conversation_app import prompts as _prompts
-    except Exception:
-        return
-    from ._inline_memory import render_block
-
-    original = _prompts.get_session_instructions
-    if getattr(original, "_supermemory_inline_patched", False):
-        return
-
-    def _with_inline_memory() -> str:  # type: ignore[no-untyped-def]
-        base = original()
-        block = render_block()
-        if INLINE_MEMORY_PLACEHOLDER in base:
-            # Drop the placeholder line entirely when there's nothing to inject.
-            # Replace only the first occurrence to avoid duplicating the block if
-            # the sentinel ever appears more than once in the profile prompt.
-            replacement = block if block else ""
-            return base.replace(INLINE_MEMORY_PLACEHOLDER, replacement, 1)
-        if not block:
-            return base
-        return f"{base}\n\n{block}\n"
-
-    _with_inline_memory._supermemory_inline_patched = True  # type: ignore[attr-defined]
-    _prompts.get_session_instructions = _with_inline_memory
-
-
-def _patch_external_profiles_into_dropdown() -> None:
-    """Make externally-injected profiles visible to upstream's gradio personality dropdown.
-
-    Upstream's ``PersonalityUI._list_personalities`` enumerates only the bundled
-    ``DEFAULT_PROFILES_DIRECTORY``. With ``REACHY_MINI_EXTERNAL_PROFILES_DIRECTORY``
-    set, the active profile (e.g. ``supermemory``) ends up as the dropdown's
-    ``value`` without appearing in ``choices``, so gradio raises on every
-    interaction.
-    """
-    try:
-        from reachy_mini_conversation_app.config import DEFAULT_PROFILES_DIRECTORY, config
-        from reachy_mini_conversation_app.gradio_personality import PersonalityUI
-    except Exception:
-        return
-
-    original = PersonalityUI._list_personalities
-    if getattr(original, "_supermemory_patched", False):
-        return
-
-    def _list_with_external(self):  # type: ignore[no-untyped-def]
-        names = original(self)
-        external_root = getattr(config, "PROFILES_DIRECTORY", None)
-        if external_root and external_root != DEFAULT_PROFILES_DIRECTORY:
-            try:
-                if external_root.exists():
-                    for p in sorted(external_root.iterdir()):
-                        if p.is_dir() and (p / "instructions.txt").exists() and p.name not in names:
-                            names.append(p.name)
-            except Exception:
-                pass
-        return names
-
-    _list_with_external._supermemory_patched = True  # type: ignore[attr-defined]
-    PersonalityUI._list_personalities = _list_with_external
+# Patches against the upstream conversation_app live in ``_patches`` so this
+# entry-point file stays focused on bootstrapping. Re-exported with their
+# original names because test_main_patches.py reaches into them via ``main._``.
+from ._patches import (
+    INLINE_MEMORY_PLACEHOLDER,
+    VAD_PREFIX_PADDING_MS_ENV,
+    VAD_SILENCE_MS_ENV,
+    VAD_THRESHOLD_ENV,
+    apply_all_patches,
+    _patch_external_profiles_into_dropdown,
+    _patch_inline_memory_into_prompt,
+    _patch_realtime_vad_defaults,
+    _preload_unlocked_upstream_config,
+)
 
 
 SETTINGS_PORT_ENV = "SUPERMEMORY_SETTINGS_PORT"
@@ -420,8 +172,18 @@ def _start_cli_settings_server() -> None:
     mount_supermemory_routes(app, str(_persistent_instance_dir()))
 
     def _serve() -> None:
-        config = uvicorn.Config(app, host=host, port=port, log_level="warning")
-        uvicorn.Server(config).run()
+        try:
+            config = uvicorn.Config(app, host=host, port=port, log_level="warning")
+            uvicorn.Server(config).run()
+        except Exception as e:
+            # Without this catch the thread dies silently — the user only
+            # discovers the failure when the URL doesn't load. Common case:
+            # port already in use (another instance, or 7861 is otherwise
+            # bound).
+            startup_log(
+                f"Supermemory settings UI failed on {host}:{port}: {e}",
+                logger=logger,
+            )
 
     threading.Thread(target=_serve, name="supermemory-settings", daemon=True).start()
     display_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host

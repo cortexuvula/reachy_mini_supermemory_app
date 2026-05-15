@@ -77,3 +77,17 @@ async def test_save_memory_propagates_error_dict() -> None:
             result = await tool(deps=None, content="x")  # type: ignore[arg-type]
 
     assert result == {"error": "boom"}
+
+
+@pytest.mark.asyncio
+async def test_save_memory_tolerates_unexpected_memory_shape() -> None:
+    """A non-dict in memories[0] used to AttributeError on .get('id')."""
+    with patch(
+        "save_memory.post_json",
+        new=AsyncMock(return_value={"memories": ["unexpected-string-shape"]}),
+    ):
+        with patch("save_memory.derive_container_tag", return_value="reachy-mini:supermemory"):
+            tool = SaveMemory()
+            result = await tool(deps=None, content="x")  # type: ignore[arg-type]
+
+    assert result == {"saved": True, "memory_id": None}

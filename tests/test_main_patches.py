@@ -283,6 +283,66 @@ def test_vad_patch_is_idempotent(fake_realtime_modules: dict) -> None:
     assert hf.ServerVad is wrapped_once  # not re-wrapped
 
 
+def test_apply_all_patches_emits_rollup(
+    fake_realtime_modules: dict, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The roll-up line must report how many patches landed."""
+    # Stub the three other upstream surfaces so the patches succeed.
+    prompts = types.ModuleType("reachy_mini_conversation_app.prompts")
+    prompts.get_session_instructions = lambda: "base"  # type: ignore[attr-defined]
+    sys.modules["reachy_mini_conversation_app.prompts"] = prompts
+
+    gradio_personality = types.ModuleType("reachy_mini_conversation_app.gradio_personality")
+
+    class PersonalityUI:
+        def _list_personalities(self):  # type: ignore[no-untyped-def]
+            return []
+
+    gradio_personality.PersonalityUI = PersonalityUI  # type: ignore[attr-defined]
+    sys.modules["reachy_mini_conversation_app.gradio_personality"] = gradio_personality
+
+    main = _import_main()
+    try:
+        main.apply_all_patches()
+        err = capsys.readouterr().err
+        assert "Upstream patches:" in err
+        # VAD + inline-memory + dropdown should land; locked-profile depends
+        # on whether config is in sys.modules (set by the fixture above).
+        assert "/4 applied" in err
+    finally:
+        sys.modules.pop("reachy_mini_conversation_app.prompts", None)
+        sys.modules.pop("reachy_mini_conversation_app.gradio_personality", None)
+
+
+def test_vad_patch_warns_when_servervad_missing(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """If neither realtime module exposes ``ServerVad``, the operator must learn about it.
+
+    Previously this silently no-op'd — users heard constant mid-sentence
+    interruptions and had no diagnostic to chase.
+    """
+    names = (
+        "reachy_mini_conversation_app.huggingface_realtime",
+        "reachy_mini_conversation_app.openai_realtime",
+    )
+    # Install modules WITHOUT a ServerVad attribute.
+    saved = {n: sys.modules.get(n) for n in names}
+    for n in names:
+        sys.modules[n] = types.ModuleType(n)  # no ServerVad
+    try:
+        main = _import_main()
+        main._patch_realtime_vad_defaults()
+        err = capsys.readouterr().err
+        assert "VAD patch WARNING" in err
+        assert "SUPERMEMORY_VAD_" in err
+    finally:
+        for n in names:
+            sys.modules.pop(n, None)
+            if saved[n] is not None:
+                sys.modules[n] = saved[n]
+
+
 # ============================================================================
 # _wake_up_robot_async
 # ============================================================================
@@ -359,3 +419,35 @@ def test_wake_up_honors_daemon_base_url_env(monkeypatch: pytest.MonkeyPatch) -> 
     main._wake_up_robot_async()
     assert _wait_for(lambda: calls)
     assert calls[0] == "http://10.0.0.5:9000/api/move/play/wake_up"
+
+
+# ============================================================================
+# _persistent_instance_dir mkdir-failure visibility
+# ============================================================================
+
+
+def test_persistent_instance_dir_warns_once_on_mkdir_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Read-only / unwritable config base must surface a single stderr warning.
+
+    Pre-fix the failure was swallowed by a bare except, so users saw silent
+    settings-save no-ops with no diagnostic.
+    """
+    from reachy_mini_supermemory_app import _env_paths
+
+    _env_paths._reset_persistent_dir_warning_for_tests()
+    main = _import_main()
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+
+    def _boom(self: Path, *_a: Any, **_kw: Any) -> None:
+        raise PermissionError("read-only fs")
+
+    monkeypatch.setattr(Path, "mkdir", _boom)
+    main._persistent_instance_dir()
+    main._persistent_instance_dir()  # second call must NOT re-warn
+
+    err = capsys.readouterr().err
+    # exactly one occurrence of the warning text
+    assert err.count("cannot create config dir") == 1
+    assert "read-only fs" in err
