@@ -15,14 +15,16 @@ tags:
 
 Reachy Mini conversation app with long-term memory backed by [supermemory.ai](https://supermemory.ai).
 
-Extends [`reachy_mini_conversation_app`](https://github.com/pollen-robotics/reachy_mini_conversation_app) with two complementary memory layers:
+Extends [`reachy_mini_conversation_app`](https://github.com/pollen-robotics/reachy_mini_conversation_app) with persistent memory, web search, and time awareness:
 
 - **Inline memory** — a small always-loaded bullet list of curated facts (under ~3000 chars) injected into Reachy's system prompt at every session start, so the user never has to re-explain things like their name or top preferences. Stored as local JSON. Managed by the `manage_memory(action, content?, old_text?)` tool with actions `add` / `replace` / `remove` / `list`.
 - **Long-term memory** (supermemory.ai) — a larger searchable store accessed via two tools: `save_memory(content, kind?)` writes a durable fact, `recall_memory(query, limit?)` semantic-searches prior memories across every tag the API key can reach.
+- **Web search** ([Tavily](https://tavily.com)) — `web_search(query, max_results?, search_depth?, time_range?)` lets the robot answer questions outside its training cutoff: news, sports scores, weather, prices. Queries are auto-prefixed with the current date/time/timezone so Tavily's answer summariser resolves "tonight" / "today" against the real calendar, not its own cutoff. Source URLs are preserved so the robot can cite domains aloud.
+- **Date & time awareness** — every session prompt includes a `<<CURRENT_DATETIME>>` stamp resolved at session start (timezone from `SUPERMEMORY_USER_TIMEZONE`, OS local, or UTC), so the model has ambient date context without a tool call. For minute-precision queries or non-local timezones, `get_current_time(timezone?)` returns a fresh, locale-aware datetime.
 - **Auto-digest (opt-in)** — when `SUPERMEMORY_AUTO_DIGEST=true`, idle conversations get summarised by a Hugging Face chat model and written to supermemory as a single entry. Captures nuance the LLM-driven save/manage tools miss. See the configuration reference for tuning.
 - **Privacy mode (opt-in)** — when `SUPERMEMORY_PRIVACY_TOGGLE=true`, pushing either antenna mutes the mic, flushes the speaker queue, and folds the antennas down to ~86° as a visible "I'm not listening" signal (the pose is held against upstream's animation loop, not just set once). Push again to resume; the audio pipeline takes a few seconds to reinitialise before the robot will respond. Auto-digest skips transcripts while privacy is on, so a side conversation never reaches supermemory. Useful when someone walks in mid-chat.
 
-All four tools are LLM-driven; the model decides when to use them based on `instructions.txt`. There is no auto-save and no auto-recall.
+All tools are LLM-driven; the model decides when to use them based on `instructions.txt`. There is no auto-save, no auto-recall, no auto-search.
 
 ## Install
 
@@ -44,11 +46,13 @@ uv pip install -e .
 ```bash
 cp .env.example .env
 # edit .env and add SUPERMEMORY_API_KEY=...
+# optional: TAVILY_API_KEY=... for web_search
+# optional: SUPERMEMORY_USER_TIMEZONE=America/New_York
 ```
 
-Or launch and visit `http://127.0.0.1:7861/supermemory/` (CLI launches) or `http://<robot>:8000/supermemory/` (daemon-registered launches) to paste the key into the settings UI.
+Or launch and visit `http://127.0.0.1:7861/supermemory/` (CLI launches) or `http://<robot>:8000/supermemory/` (daemon-registered launches) to paste the keys into the settings UI. The settings page has three sections — **Supermemory** (memory backend), **Web search** (Tavily key for `web_search`), and **Date & time** (IANA timezone for the prompt stamp and `get_current_time` default).
 
-Settings written from the UI persist to `$XDG_CONFIG_HOME/reachy_mini_supermemory_app/.env` (defaults to `~/.config/reachy_mini_supermemory_app/.env`). This location is outside the package install directory so it survives app updates and reinstalls. On first run any pre-existing `.env` inside the install dir is migrated over once.
+Settings written from the UI persist to `$XDG_CONFIG_HOME/reachy_mini_supermemory_app/.env` (defaults to `~/.config/reachy_mini_supermemory_app/.env`). This location is outside the package install directory so it survives app updates and reinstalls. On first run any pre-existing `.env` inside the install dir is migrated over once. Keys written via upstream's own console UI are also captured on subsequent boots so they aren't lost on the next sync.
 
 ## Run
 
@@ -93,6 +97,12 @@ All env vars below can go in `.env` (see `.env.example`) or be exported by your 
 | `SUPERMEMORY_DIGEST_MIN_TURNS` | `4` | Minimum buffered turns needed before a digest is attempted (skips trivially short exchanges). |
 | `SUPERMEMORY_DIGEST_MODEL` | `meta-llama/Llama-3.1-8B-Instruct` | HF model used for the digest summarisation. |
 | `SUPERMEMORY_DIGEST_API_URL` | `https://router.huggingface.co/v1/chat/completions` | Chat-completions endpoint for the digest call. |
+| `SUPERMEMORY_DIGEST_SUMMARY_MAX_CHARS` | `600` | Hard cap on chars written to supermemory per digest. |
+| `SUPERMEMORY_DIGEST_TRANSCRIPT_MAX_CHARS` | `32000` | Cap on transcript chars sent to the summariser; older turns are elided when over. |
+| `SUPERMEMORY_DIGEST_MAX_BUFFER_TURNS` | `500` | Bound on retained turns awaiting a successful digest. Drops oldest on overflow. |
+| `TAVILY_API_KEY` | *(optional)* | Bearer token for [Tavily](https://tavily.com) — required for `web_search`. Without it the tool returns a friendly error and the model falls back to training knowledge. Free tier covers 1,000 searches/month. |
+| `TAVILY_BASE_URL` | `https://api.tavily.com` | Tavily API base override (e.g. for a proxy or self-hosted gateway). |
+| `SUPERMEMORY_USER_TIMEZONE` | *system tz* | IANA timezone (e.g. `America/New_York`) used by the ambient `<<CURRENT_DATETIME>>` prompt stamp, `get_current_time`, and the `web_search` date anchor. Leave blank to use the host's local timezone. Invalid values fall back to OS local then UTC; the daemon does not crash on a typo. |
 
 Upstream `reachy_mini_conversation_app` env vars (e.g. `BACKEND_PROVIDER`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `HF_REALTIME_CONNECTION_MODE`, `GRADIO_SERVER_NAME`) work unchanged — see the upstream `.env.example` for the full list.
 

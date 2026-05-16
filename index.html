@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Reachy Mini Supermemory - Voice companion with long-term memory</title>
-  <meta name="description" content="Reachy Mini conversation app with dual-layer memory: a small always-loaded inline block and a searchable supermemory.ai archive. Talk to your robot once, it remembers next session." />
+  <title>Reachy Mini Supermemory - Voice companion with memory, web search, and time awareness</title>
+  <meta name="description" content="Reachy Mini conversation app with dual-layer memory (inline + supermemory.ai), Tavily-backed web search, and timezone-aware date/time so the robot knows what 'tonight' actually means." />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -25,14 +25,17 @@
           <div class="tags">
             <span class="tag">long-term memory</span>
             <span class="tag">supermemory.ai</span>
+            <span class="tag">web search</span>
+            <span class="tag">tavily</span>
+            <span class="tag">time-aware</span>
             <span class="tag">voice agent</span>
             <span class="tag">privacy mode</span>
           </div>
 
           <p class="hero-description">
-            A voice companion app for Reachy Mini that <b>remembers across sessions</b>.
+            A voice companion app for Reachy Mini that <b>remembers across sessions</b>, <b>searches the live web</b>, and <b>knows what "tonight" means</b>.
             <br /><br />
-            Two memory layers work together: a small <b>always-loaded inline block</b> of durable facts (your name, top preferences, family) injected into Reachy's prompt every session, and a larger <b>searchable supermemory.ai archive</b> for the long tail. Reachy curates them itself — you just talk.
+            Two memory layers — a small <b>always-loaded inline block</b> of durable facts injected into every session, plus a larger <b>searchable supermemory.ai archive</b> for the long tail. <b>Tavily-backed web search</b> for anything past the model's training cutoff, with queries auto-anchored to the user's local date so sports scores and breaking news resolve correctly. Reachy curates them itself — you just talk.
           </p>
         </div>
       </div>
@@ -51,6 +54,12 @@
         </li>
         <li>
           <b>Auto-discovered tag scope</b> — recall finds your containers automatically; toggle which ones to read from in the <code>/supermemory/</code> settings page.
+        </li>
+        <li>
+          <b>Web search via Tavily</b> — the <code>web_search</code> tool answers questions outside the model's training cutoff (news, sports scores, weather, prices). Every query is auto-prefixed with the user's local date / time / timezone so Tavily's answer summariser resolves "tonight" / "today" against the real calendar. Optional <code>time_range</code> parameter filters to <code>day</code> / <code>week</code> / <code>month</code> / <code>year</code> for recency-sensitive queries; URLs are preserved so the robot cites domains aloud.
+        </li>
+        <li>
+          <b>Date &amp; time awareness</b> — every session prompt includes an ambient <code>&lt;&lt;CURRENT_DATETIME&gt;&gt;</code> stamp resolved at session start (timezone from <code>SUPERMEMORY_USER_TIMEZONE</code>, OS local, or UTC), so the model has date context without a tool round-trip. The <code>get_current_time(timezone?)</code> tool covers minute precision and cross-zone queries ("what time is it in Tokyo?").
         </li>
         <li>
           <b>Privacy mode (opt-in)</b> — push either antenna to instantly mute the mic and flush the speaker. Both antennas fold down to ~86° as a clear visual indicator that Reachy isn't listening. Push again to resume; <em>after turning privacy off it takes a few seconds before the robot will respond</em> while the audio pipeline reinitialises. Auto-digest also skips transcripts captured during privacy so a side conversation doesn't end up in the archive.
@@ -83,6 +92,7 @@
             <li><span>Find <b>Reachy Mini Supermemory</b> in the list of available applications.</span></li>
             <li><span>Click <b>Install</b>. The dashboard handles dependencies.</span></li>
             <li><span>Set <code>SUPERMEMORY_API_KEY</code> in <code>.env</code> (or visit <code>/supermemory/</code> on the robot to paste it from the browser).</span></li>
+            <li><span>Optionally: paste a <code>TAVILY_API_KEY</code> in the <b>Web search</b> section to enable <code>web_search</code>, and pick an IANA timezone in the <b>Date &amp; time</b> section.</span></li>
             <li><span>Start the app and say hello.</span></li>
           </ol>
         </div>
@@ -90,11 +100,11 @@
         <div>
           <h2 class="section-title">Configuration</h2>
           <p>
-            Every behaviour is env-var-tunable: which tags recall searches, the inline-memory char cap, the realtime VAD threshold (so the robot's mic doesn't trip on its own speaker), and the optional auto-digest model. Full table in the
+            Every behaviour is env-var-tunable: which tags recall searches, the inline-memory char cap, the realtime VAD threshold (so the robot's mic doesn't trip on its own speaker), the user's timezone, the Tavily backend, and the optional auto-digest model. Full table in the
             <a href="https://github.com/cortexuvula/reachy_mini_supermemory_app#configuration-reference" class="link-tertiary">README</a>.
           </p>
           <p>
-            Requires a <a href="https://supermemory.ai" class="link-tertiary">supermemory.ai</a> account and, for the optional digest feature, a Hugging Face token with inference-provider access.
+            Requires a <a href="https://supermemory.ai" class="link-tertiary">supermemory.ai</a> account. Optional: a <a href="https://tavily.com" class="link-tertiary">Tavily</a> key (1,000 free searches/month) for <code>web_search</code>, and a Hugging Face token with inference-provider access for the optional digest feature.
           </p>
         </div>
       </div>
@@ -111,7 +121,7 @@
         </div>
         <p class="footer-help">
           Need help? Reach the Reachy Mini community on <a href="https://discord.gg/u3QtUBhy" target="_blank" rel="noopener">Discord</a>.
-          Built on <a href="https://www.pollen-robotics.com/" target="_blank" rel="noopener">Pollen Robotics</a>' Reachy Mini SDK x <a href="https://supermemory.ai" target="_blank" rel="noopener">supermemory.ai</a>.
+          Built on <a href="https://www.pollen-robotics.com/" target="_blank" rel="noopener">Pollen Robotics</a>' Reachy Mini SDK with <a href="https://supermemory.ai" target="_blank" rel="noopener">supermemory.ai</a> and <a href="https://tavily.com" target="_blank" rel="noopener">Tavily</a>.
         </p>
       </div>
     </div>
