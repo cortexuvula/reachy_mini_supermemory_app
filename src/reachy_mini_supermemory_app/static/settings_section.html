@@ -8,10 +8,10 @@
    * Scoped to elements that aren't inside our own section so we don't
    * accidentally re-style anything we own.
    */
-  body select:not(#supermemory-section select):not(#websearch-section select),
-  body input[type="text"]:not(#supermemory-section input):not(#websearch-section input),
-  body input[type="password"]:not(#supermemory-section input):not(#websearch-section input),
-  body textarea:not(#supermemory-section textarea):not(#websearch-section textarea) {
+  body select:not(#supermemory-section select):not(#websearch-section select):not(#datetime-section select),
+  body input[type="text"]:not(#supermemory-section input):not(#websearch-section input):not(#datetime-section input),
+  body input[type="password"]:not(#supermemory-section input):not(#websearch-section input):not(#datetime-section input),
+  body textarea:not(#supermemory-section textarea):not(#websearch-section textarea):not(#datetime-section textarea) {
     -webkit-appearance: none;
     -moz-appearance: none;
     appearance: none;
@@ -19,7 +19,7 @@
     color: #e8eef9 !important;
     border: 1px solid rgba(127, 127, 127, 0.3) !important;
   }
-  body select:not(#supermemory-section select):not(#websearch-section select) {
+  body select:not(#supermemory-section select):not(#websearch-section select):not(#datetime-section select) {
     /* Re-add a chevron since `appearance: none` drops the native one. */
     background-image:
       linear-gradient(45deg, transparent 50%, #e8eef9 50%),
@@ -279,6 +279,78 @@
           statusEl.className = "tv-status tv-err";
           statusEl.textContent = j.error || "Save failed.";
         }
+      } finally {
+        saveBtn.disabled = false;
+      }
+    });
+
+    refresh();
+  })();
+  </script>
+</details>
+
+<details id="datetime-section" open style="max-width:960px;margin:1rem auto;padding:1rem 1.25rem;font-family:inherit;color:inherit;border:1px solid rgba(127,127,127,0.25);border-radius:0.5rem;background:rgba(127,127,127,0.05);">
+  <summary style="font-size:1.1rem;font-weight:600;cursor:pointer;margin-bottom:0.25rem;">Date &amp; time</summary>
+  <p style="color:#888;margin:0.5rem 0;">User's local timezone for the ambient datetime stamp in the prompt and the default for <code>get_current_time</code>. Leave blank to use the system timezone. Use an <a href="https://en.wikipedia.org/wiki/List_of_tz_database_time_zones" target="_blank" rel="noreferrer">IANA name</a> like <code>America/New_York</code>, <code>Europe/Paris</code>, or <code>Africa/Johannesburg</code>.</p>
+  <div id="tz-status" class="tz-status">Checking…</div>
+  <label for="tz-input" style="display:block;margin:0.75rem 0 0.25rem;font-weight:600;">Timezone</label>
+  <div style="display:flex;gap:0.5rem;align-items:stretch;">
+    <input id="tz-input" type="text" autocomplete="off" placeholder="Africa/Johannesburg" style="flex:1;padding:0.5rem;font-size:1rem;box-sizing:border-box;" />
+    <button id="tz-save" style="padding:0.5rem 1rem;font-size:1rem;cursor:pointer;">Save</button>
+  </div>
+
+  <style>
+    #datetime-section .tz-status { margin-top:0.5rem;padding:0.5rem 0.75rem;border-radius:0.25rem; }
+    #datetime-section .tz-ok    { background:#d1f0d1;color:#1e5e1e; }
+    #datetime-section .tz-err   { background:#f0d1d1;color:#5e1e1e; }
+    #datetime-section .tz-info  { background:#e6e6e6;color:#333; }
+  </style>
+  <script>
+  (function () {
+    const $ = (id) => document.getElementById(id);
+    const statusEl = $("tz-status");
+    const inputEl  = $("tz-input");
+    const saveBtn  = $("tz-save");
+
+    function setStatus(cls, text) {
+      statusEl.className = "tz-status " + cls;
+      statusEl.textContent = text;
+    }
+
+    async function refresh() {
+      try {
+        const j = await (await fetch("/supermemory/timezone")).json();
+        inputEl.value = j.timezone || "";
+        if (j.timezone) {
+          setStatus("tz-ok", "Timezone set to " + j.timezone + ".");
+        } else if (j.system) {
+          setStatus("tz-info", "Using system timezone: " + j.system + ".");
+        } else {
+          setStatus("tz-info", "No timezone configured.");
+        }
+      } catch (e) {
+        setStatus("tz-err", "Could not reach settings backend.");
+      }
+    }
+
+    saveBtn.addEventListener("click", async () => {
+      const tz = inputEl.value.trim();
+      saveBtn.disabled = true;
+      try {
+        const j = await (
+          await fetch("/supermemory/timezone", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ timezone: tz }),
+          })
+        ).json();
+        if (j.ok) {
+          await refresh();
+        } else {
+          setStatus("tz-err", j.error || "Save failed.");
+        }
+      } catch (e) {
+        setStatus("tz-err", "Save failed.");
       } finally {
         saveBtn.disabled = false;
       }

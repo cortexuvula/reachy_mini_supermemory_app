@@ -310,9 +310,9 @@ def test_apply_all_patches_emits_rollup(
         main.apply_all_patches()
         err = capsys.readouterr().err
         assert "Upstream patches:" in err
-        # 4 of the 5 patches always land in this fixture (locked-profile is
+        # 5 of the 6 patches always land in this fixture (locked-profile is
         # content-conditional and won't fire without a real config module).
-        assert "/5 applied" in err
+        assert "/6 applied" in err
     finally:
         sys.modules.pop("reachy_mini_conversation_app.prompts", None)
         sys.modules.pop("reachy_mini_conversation_app.gradio_personality", None)
@@ -380,6 +380,99 @@ def test_available_tools_patch_warns_when_module_missing(
     err = capsys.readouterr().err
     # Either an import error or a missing-symbol warning — both acceptable.
     assert "Available-tools patch WARNING" in err
+
+
+# ============================================================================
+# _patch_datetime_into_prompt
+# ============================================================================
+
+
+@pytest.fixture
+def fake_prompts_for_datetime():
+    """Stub the upstream prompts module so the datetime patch has something to wrap."""
+    saved = sys.modules.get("reachy_mini_conversation_app.prompts")
+    mod = types.ModuleType("reachy_mini_conversation_app.prompts")
+    mod.get_session_instructions = lambda: "head\n<<CURRENT_DATETIME>>\ntail"  # type: ignore[attr-defined]
+    sys.modules["reachy_mini_conversation_app.prompts"] = mod
+    yield mod
+    sys.modules.pop("reachy_mini_conversation_app.prompts", None)
+    if saved is not None:
+        sys.modules["reachy_mini_conversation_app.prompts"] = saved
+
+
+def test_datetime_patch_substitutes_placeholder(fake_prompts_for_datetime: Any) -> None:
+    main = _import_main()
+    main._patch_datetime_into_prompt()
+    rendered = fake_prompts_for_datetime.get_session_instructions()
+    assert "<<CURRENT_DATETIME>>" not in rendered
+    assert "Current date and time:" in rendered
+    assert "get_current_time" in rendered  # the in-prompt hint
+
+
+def test_datetime_patch_passes_through_when_placeholder_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    saved = sys.modules.get("reachy_mini_conversation_app.prompts")
+    mod = types.ModuleType("reachy_mini_conversation_app.prompts")
+    mod.get_session_instructions = lambda: "no placeholder here"  # type: ignore[attr-defined]
+    sys.modules["reachy_mini_conversation_app.prompts"] = mod
+    try:
+        main = _import_main()
+        main._patch_datetime_into_prompt()
+        assert mod.get_session_instructions() == "no placeholder here"
+    finally:
+        sys.modules.pop("reachy_mini_conversation_app.prompts", None)
+        if saved is not None:
+            sys.modules["reachy_mini_conversation_app.prompts"] = saved
+
+
+def test_datetime_patch_is_idempotent(fake_prompts_for_datetime: Any) -> None:
+    main = _import_main()
+    main._patch_datetime_into_prompt()
+    first = fake_prompts_for_datetime.get_session_instructions
+    main._patch_datetime_into_prompt()
+    assert fake_prompts_for_datetime.get_session_instructions is first
+
+
+def test_datetime_patch_warns_when_prompts_missing(capsys: pytest.CaptureFixture[str]) -> None:
+    sys.modules.pop("reachy_mini_conversation_app.prompts", None)
+    main = _import_main()
+    main._patch_datetime_into_prompt()
+    err = capsys.readouterr().err
+    assert "Datetime patch WARNING" in err
+
+
+def test_render_current_datetime_uses_env_timezone(monkeypatch: pytest.MonkeyPatch) -> None:
+    from reachy_mini_supermemory_app import _patches
+
+    monkeypatch.setenv("SUPERMEMORY_USER_TIMEZONE", "Asia/Tokyo")
+    rendered = _patches._render_current_datetime()
+    assert "Asia/Tokyo" in rendered
+
+
+def test_render_current_datetime_falls_back_on_invalid_timezone(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bogus IANA name must not crash; fall through to local time."""
+    from reachy_mini_supermemory_app import _patches
+
+    monkeypatch.setenv("SUPERMEMORY_USER_TIMEZONE", "Not/A/Real/Zone")
+    rendered = _patches._render_current_datetime()
+    # Should still produce a date+time line — just not in the bogus zone.
+    assert "Current date and time:" in rendered
+    assert "Not/A/Real/Zone" not in rendered
+
+
+def test_datetime_and_inline_memory_compose_in_either_order(
+    fake_prompts_for_datetime: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both patches must coexist regardless of which wrapped first."""
+    fake_prompts_for_datetime.get_session_instructions = lambda: (
+        "head\n<<CURRENT_DATETIME>>\n<<INLINE_MEMORY>>\ntail"
+    )
+    main = _import_main()
+    main._patch_inline_memory_into_prompt()
+    main._patch_datetime_into_prompt()
+    rendered = fake_prompts_for_datetime.get_session_instructions()
+    assert "<<CURRENT_DATETIME>>" not in rendered
+    assert "<<INLINE_MEMORY>>" not in rendered
+    assert "Current date and time:" in rendered
 
 
 def test_vad_patch_warns_when_servervad_missing(

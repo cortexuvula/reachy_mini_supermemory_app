@@ -222,6 +222,105 @@ def _preload_unlocked_upstream_config() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Current-datetime injection into the session prompt
+# ---------------------------------------------------------------------------
+
+CURRENT_DATETIME_PLACEHOLDER = "<<CURRENT_DATETIME>>"
+USER_TIMEZONE_ENV = "SUPERMEMORY_USER_TIMEZONE"
+
+
+def _render_current_datetime() -> str:
+    """Build the human-readable datetime string injected at session start.
+
+    Resolves timezone in this order:
+      1. ``SUPERMEMORY_USER_TIMEZONE`` env var (IANA name, e.g. ``Europe/Paris``).
+      2. The OS's local timezone (via ``datetime.astimezone()``).
+      3. UTC as last resort if the previous two raise.
+
+    The line ends with a hint that ``get_current_time`` is available for
+    precise minute-level queries, so the model knows the session-start
+    timestamp isn't reliable mid-conversation.
+    """
+    import datetime
+
+    tz_name = os.environ.get(USER_TIMEZONE_ENV, "").strip()
+    now: datetime.datetime
+    tz_display: str
+    if tz_name:
+        try:
+            import zoneinfo
+
+            tz = zoneinfo.ZoneInfo(tz_name)
+            now = datetime.datetime.now(tz)
+            tz_display = tz_name
+        except Exception:
+            now = datetime.datetime.now().astimezone()
+            tz_display = str(now.tzinfo) if now.tzinfo else "local"
+    else:
+        try:
+            now = datetime.datetime.now().astimezone()
+            tz_display = str(now.tzinfo) if now.tzinfo else "local"
+        except Exception:
+            now = datetime.datetime.now(datetime.timezone.utc)
+            tz_display = "UTC"
+
+    weekday = now.strftime("%A")
+    date_part = now.strftime("%B %-d, %Y") if hasattr(now, "strftime") else now.isoformat()
+    # %-d is GNU; on platforms without it %#d would be needed. Wrap defensively.
+    try:
+        date_part = now.strftime("%B %-d, %Y")
+    except Exception:
+        date_part = now.strftime("%B %d, %Y").replace(" 0", " ")
+    time_part = now.strftime("%I:%M %p").lstrip("0")
+
+    return (
+        f"Current date and time: it's {weekday}, {date_part}, around {time_part} "
+        f"({tz_display}). The exact minute may have drifted since this session "
+        f"started — call get_current_time when the user asks for the precise time."
+    )
+
+
+def _patch_datetime_into_prompt() -> None:
+    """Substitute the current local datetime into ``get_session_instructions``.
+
+    Wraps the upstream prompt loader (same hook the inline-memory patch uses)
+    so every new realtime session re-renders the datetime line. The wrapper
+    composes cleanly with the inline-memory wrapper — they each look for
+    their own placeholder and pass the rest through.
+    """
+    try:
+        from reachy_mini_conversation_app import prompts as _prompts
+    except Exception as e:
+        startup_log(
+            f"Datetime patch WARNING: cannot import prompts module ({e}); "
+            "<<CURRENT_DATETIME>> placeholder will not be substituted",
+            logger=logger,
+        )
+        return
+
+    original = getattr(_prompts, "get_session_instructions", None)
+    if original is None:
+        startup_log(
+            "Datetime patch WARNING: get_session_instructions not found in "
+            "upstream prompts module; <<CURRENT_DATETIME>> placeholder will "
+            "not be substituted",
+            logger=logger,
+        )
+        return
+    if getattr(original, "_supermemory_datetime_patched", False):
+        return
+
+    def _with_datetime() -> str:  # type: ignore[no-untyped-def]
+        base = original()
+        if CURRENT_DATETIME_PLACEHOLDER in base:
+            return base.replace(CURRENT_DATETIME_PLACEHOLDER, _render_current_datetime(), 1)
+        return base
+
+    _with_datetime._supermemory_datetime_patched = True  # type: ignore[attr-defined]
+    _prompts.get_session_instructions = _with_datetime
+
+
+# ---------------------------------------------------------------------------
 # Inline-memory injection into the session prompt
 # ---------------------------------------------------------------------------
 
@@ -406,11 +505,21 @@ def _vad_applied() -> bool:
 
 
 def _inline_memory_applied() -> bool:
+    """Walk the wrapper chain looking for the inline-memory marker.
+
+    Both inline-memory and datetime patches wrap ``get_session_instructions``;
+    whichever runs second hides the other's marker from the outermost frame.
+    """
     try:
         from reachy_mini_conversation_app import prompts as _prompts
     except Exception:
         return False
-    return bool(getattr(getattr(_prompts, "get_session_instructions", None), "_supermemory_inline_patched", False))
+    fn = getattr(_prompts, "get_session_instructions", None)
+    while fn is not None:
+        if getattr(fn, "_supermemory_inline_patched", False):
+            return True
+        fn = _unwrap(fn)
+    return False
 
 
 def _dropdown_applied() -> bool:
@@ -440,13 +549,45 @@ def _available_tools_applied() -> bool:
     return bool(getattr(getattr(_hp, "available_tools_for", None), "_supermemory_avail_tools_patched", False))
 
 
+def _datetime_applied() -> bool:
+    """``get_session_instructions`` wrapped by the datetime patch?
+
+    The inline-memory patch also wraps the same symbol, so we walk the
+    closure chain looking for the marker rather than just checking the
+    outermost function.
+    """
+    try:
+        from reachy_mini_conversation_app import prompts as _prompts
+    except Exception:
+        return False
+    fn = getattr(_prompts, "get_session_instructions", None)
+    while fn is not None:
+        if getattr(fn, "_supermemory_datetime_patched", False):
+            return True
+        fn = _unwrap(fn)
+    return False
+
+
+def _unwrap(fn):  # type: ignore[no-untyped-def]
+    """Best-effort: pull the wrapped function out of a closure if present."""
+    closure = getattr(fn, "__closure__", None) or ()
+    for cell in closure:
+        contents = cell.cell_contents
+        if callable(contents):
+            return contents
+    return None
+
+
 def apply_all_patches() -> None:
-    """Run the five upstream patches in dependency order, then emit a roll-up.
+    """Run the six upstream patches in dependency order, then emit a roll-up.
 
     Order matters: ``_preload_unlocked_upstream_config`` must run BEFORE any
     other import of ``reachy_mini_conversation_app.config`` (it swaps the
-    module entry in ``sys.modules`` and so only works pre-import). The other
-    four are commutative.
+    module entry in ``sys.modules`` and so only works pre-import). The two
+    prompt patches (inline-memory and datetime) both wrap
+    ``get_session_instructions`` — they compose cleanly because each looks
+    for its own placeholder. Order within that pair doesn't matter; the
+    outermost wrapper runs first and passes the rest through.
 
     The roll-up uses the per-patch marker attributes to verify which patches
     actually landed against the running upstream; this is the operator-facing
@@ -456,6 +597,7 @@ def apply_all_patches() -> None:
     _preload_unlocked_upstream_config()
     _patch_realtime_vad_defaults()
     _patch_inline_memory_into_prompt()
+    _patch_datetime_into_prompt()
     _patch_external_profiles_into_dropdown()
     _patch_filter_available_tools()
 
@@ -463,6 +605,7 @@ def apply_all_patches() -> None:
         ("locked-profile", _locked_profile_applied()),
         ("vad-defaults", _vad_applied()),
         ("inline-memory", _inline_memory_applied()),
+        ("datetime", _datetime_applied()),
         ("personality-dropdown", _dropdown_applied()),
         ("available-tools-filter", _available_tools_applied()),
     )

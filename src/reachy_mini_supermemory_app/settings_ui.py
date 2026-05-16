@@ -24,11 +24,36 @@ logger = logging.getLogger(__name__)
 
 _API_KEY_ENV = "SUPERMEMORY_API_KEY"
 _TAVILY_KEY_ENV = "TAVILY_API_KEY"
+_USER_TIMEZONE_ENV = "SUPERMEMORY_USER_TIMEZONE"
 _env_file_lock = threading.Lock()
 
 
 def _is_tavily_configured() -> bool:
     return bool((os.environ.get(_TAVILY_KEY_ENV) or "").strip())
+
+
+def _system_timezone() -> str:
+    """Return the OS-detected local timezone label, or empty string if unavailable."""
+    try:
+        import datetime
+
+        now = datetime.datetime.now().astimezone()
+        return str(now.tzinfo) if now.tzinfo else ""
+    except Exception:
+        return ""
+
+
+def _validate_iana_timezone(name: str) -> bool:
+    """True iff ``name`` is a loadable IANA timezone."""
+    if not name:
+        return False
+    try:
+        import zoneinfo
+
+        zoneinfo.ZoneInfo(name)
+        return True
+    except Exception:
+        return False
 
 
 def _persist_to_env_file(env_path: Path, key: str, value: str) -> bool:
@@ -243,6 +268,48 @@ def mount_supermemory_routes(app: object, instance_path: Optional[str] = None) -
     @app.get("/supermemory/status")
     def _status() -> JSONResponse:  # type: ignore[misc]
         return JSONResponse({"configured": is_configured()})
+
+    @app.get("/supermemory/timezone")
+    def _get_timezone() -> JSONResponse:  # type: ignore[misc]
+        return JSONResponse(
+            {
+                "timezone": (os.environ.get(_USER_TIMEZONE_ENV) or "").strip(),
+                "system": _system_timezone(),
+            }
+        )
+
+    class TimezonePayload(BaseModel):
+        timezone: str
+
+    @app.post("/supermemory/timezone")
+    def _set_timezone(payload: TimezonePayload) -> JSONResponse:  # type: ignore[misc]
+        value = (payload.timezone or "").strip()
+        if "\n" in value or "\r" in value:
+            return JSONResponse(
+                {"ok": False, "error": "Timezone cannot contain newlines."},
+                status_code=400,
+            )
+        # Empty value clears the override → use system timezone.
+        if not value:
+            os.environ.pop(_USER_TIMEZONE_ENV, None)
+            if instance_path:
+                _persist_to_env_file(Path(instance_path) / ".env", _USER_TIMEZONE_ENV, "")
+            return JSONResponse({"ok": True, "timezone": ""})
+        if not _validate_iana_timezone(value):
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": (
+                        f"Unknown IANA timezone {value!r}. "
+                        "Use a name from the tz database (e.g. 'America/New_York')."
+                    ),
+                },
+                status_code=400,
+            )
+        os.environ[_USER_TIMEZONE_ENV] = value
+        if instance_path:
+            _persist_to_env_file(Path(instance_path) / ".env", _USER_TIMEZONE_ENV, value)
+        return JSONResponse({"ok": True, "timezone": value})
 
     @app.get("/supermemory/tavily-status")
     def _tavily_status() -> JSONResponse:  # type: ignore[misc]

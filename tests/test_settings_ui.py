@@ -59,6 +59,26 @@ def test_supermemory_section_includes_websearch_block() -> None:
     assert "/supermemory/tavily-status" in section
 
 
+def test_supermemory_section_includes_datetime_block() -> None:
+    """Date & time settings ship alongside the other sections."""
+    section = settings_ui._supermemory_section()
+    assert "datetime-section" in section
+    assert "Timezone" in section
+    assert "/supermemory/timezone" in section
+
+
+def test_validate_iana_timezone_accepts_known_zones() -> None:
+    assert settings_ui._validate_iana_timezone("America/New_York")
+    assert settings_ui._validate_iana_timezone("Europe/Paris")
+    assert settings_ui._validate_iana_timezone("UTC")
+
+
+def test_validate_iana_timezone_rejects_garbage() -> None:
+    assert not settings_ui._validate_iana_timezone("Not/A/Real/Zone")
+    assert not settings_ui._validate_iana_timezone("")
+    assert not settings_ui._validate_iana_timezone("EST5EDT-not-iana")
+
+
 def test_standalone_page_wraps_section_in_html_shell() -> None:
     """The /supermemory/ route now serves the section wrapped in a minimal shell.
 

@@ -73,11 +73,14 @@ from ._env_paths import (
 # entry-point file stays focused on bootstrapping. Re-exported with their
 # original names because test_main_patches.py reaches into them via ``main._``.
 from ._patches import (
+    CURRENT_DATETIME_PLACEHOLDER,
     INLINE_MEMORY_PLACEHOLDER,
+    USER_TIMEZONE_ENV,
     VAD_PREFIX_PADDING_MS_ENV,
     VAD_SILENCE_MS_ENV,
     VAD_THRESHOLD_ENV,
     apply_all_patches,
+    _patch_datetime_into_prompt,
     _patch_external_profiles_into_dropdown,
     _patch_filter_available_tools,
     _patch_inline_memory_into_prompt,
