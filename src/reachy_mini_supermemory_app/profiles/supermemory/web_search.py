@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 TAVILY_API_KEY_ENV = "TAVILY_API_KEY"
 TAVILY_BASE_URL_ENV = "TAVILY_BASE_URL"
+USER_TIMEZONE_ENV = "SUPERMEMORY_USER_TIMEZONE"
 DEFAULT_BASE_URL = "https://api.tavily.com"
 SEARCH_PATH = "/search"
 
@@ -36,6 +37,7 @@ DEFAULT_MAX_RESULTS = 3
 MAX_MAX_RESULTS = 10
 DEFAULT_SEARCH_DEPTH = "basic"
 SEARCH_DEPTHS = ("basic", "advanced")
+TIME_RANGES = ("day", "week", "month", "year")
 # Voice context — the model has to read the result aloud, so a full page
 # of content is counterproductive. ~400 chars ≈ one sustained sentence
 # fragment per result, leaving the model room to compose its own framing.
@@ -55,8 +57,10 @@ class WebSearch(Tool):
         "cutoff or the user's personal memory. NOT for the user's own past context — "
         "for that, use recall_memory. Use sparingly: each call hits a paid API and adds "
         "1-3 seconds of latency to the spoken response. Phrase the query as topic + key "
-        "terms (e.g. 'World Cup 2026 final result'), not as a full question. Cite the "
-        "source domain when speaking the answer ('according to bbc.com…')."
+        "terms (e.g. 'World Cup 2026 final result'), not as a full question. For "
+        "time-sensitive queries ('tonight', 'today', 'this week'), set the time_range "
+        "parameter — otherwise stale results may surface. Cite the source domain when "
+        "speaking the answer ('according to bbc.com…')."
     )
     parameters_schema = {
         "type": "object",
@@ -82,6 +86,18 @@ class WebSearch(Tool):
                     "latency; only use when the user explicitly asks for in-depth info."
                 ),
             },
+            "time_range": {
+                "type": "string",
+                "enum": list(TIME_RANGES),
+                "description": (
+                    "Restrict results to recent content only. Use 'day' for 'tonight' "
+                    "/ 'today' queries (sports scores, breaking news), 'week' for "
+                    "'this week' / 'recent', 'month' for 'recent months', 'year' for "
+                    "'this year'. OMIT for historical or factual queries (e.g. 'when "
+                    "was the Eiffel Tower built') so the answer isn't artificially "
+                    "filtered out."
+                ),
+            },
         },
         "required": ["query"],
     }
@@ -103,15 +119,24 @@ class WebSearch(Tool):
 
         max_results = _coerce_max_results(kwargs.get("max_results"))
         depth = _coerce_search_depth(kwargs.get("search_depth"))
+        time_range = _coerce_time_range(kwargs.get("time_range"))
 
-        body = {
-            "query": query,
+        body: Dict[str, Any] = {
+            # Prefix the user's query with the current date/time so Tavily's
+            # answer-summariser resolves relative phrases ("tonight",
+            # "today", "this week") against the actual calendar instead of
+            # its own training cutoff. Without this anchor, time-sensitive
+            # queries like "Fever vs Mystics tonight's score" come back
+            # with last-season's game.
+            "query": _build_anchored_query(query),
             "max_results": max_results,
             "search_depth": depth,
             "include_answer": True,
             "include_raw_content": False,
             "include_images": False,
         }
+        if time_range:
+            body["time_range"] = time_range
         url = f"{_get_base_url()}{SEARCH_PATH}"
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -163,6 +188,60 @@ def _coerce_search_depth(raw: Any) -> str:
         return DEFAULT_SEARCH_DEPTH
     candidate = raw.strip().lower()
     return candidate if candidate in SEARCH_DEPTHS else DEFAULT_SEARCH_DEPTH
+
+
+def _coerce_time_range(raw: Any) -> str:
+    """Validate the ``time_range`` parameter, returning '' when not set or invalid.
+
+    Empty string skips the field in the request body entirely so Tavily
+    doesn't filter results — important for historical queries.
+    """
+    if not isinstance(raw, str):
+        return ""
+    candidate = raw.strip().lower()
+    return candidate if candidate in TIME_RANGES else ""
+
+
+def _build_anchored_query(query: str) -> str:
+    """Prefix ``query`` with the current date/time/timezone for Tavily.
+
+    Tavily's ``include_answer`` summariser is itself an LLM with a training
+    cutoff; without an explicit date anchor it interprets "tonight" /
+    "today" / "this week" against that cutoff. Empirically the answer for
+    sports scores or breaking-news queries comes back months or seasons
+    out of date.
+
+    The prefix gives the summariser everything it needs to resolve
+    relative time: ISO date for unambiguous parsing, weekday for
+    "tonight" vs "yesterday" reasoning, local time for hour-of-day
+    queries, and timezone so it knows what "tonight" means relative to
+    the user's locale.
+    """
+    import datetime
+
+    tz_name = (os.environ.get(USER_TIMEZONE_ENV) or "").strip()
+    if tz_name:
+        try:
+            import zoneinfo
+
+            now = datetime.datetime.now(zoneinfo.ZoneInfo(tz_name))
+            tz_display = tz_name
+        except Exception:
+            now = datetime.datetime.now().astimezone()
+            tz_display = str(now.tzinfo) if now.tzinfo else "local"
+    else:
+        try:
+            now = datetime.datetime.now().astimezone()
+            tz_display = str(now.tzinfo) if now.tzinfo else "local"
+        except Exception:
+            now = datetime.datetime.now(datetime.timezone.utc)
+            tz_display = "UTC"
+
+    anchor = (
+        f"As of {now.strftime('%Y-%m-%d %H:%M')} "
+        f"({now.strftime('%A')}, {tz_display})"
+    )
+    return f"{anchor}: {query}"
 
 
 def _format_response(payload: Dict[str, Any], max_results: int) -> Dict[str, Any]:

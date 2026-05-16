@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, Optional
 from unittest.mock import patch
 
@@ -16,9 +17,13 @@ from web_search import (  # type: ignore[import-not-found]
     RESULT_CONTENT_MAX_CHARS,
     SEARCH_DEPTHS,
     TAVILY_API_KEY_ENV,
+    TIME_RANGES,
+    USER_TIMEZONE_ENV,
     WebSearch,
+    _build_anchored_query,
     _coerce_max_results,
     _coerce_search_depth,
+    _coerce_time_range,
     _format_response,
 )
 
@@ -228,12 +233,18 @@ async def test_request_body_sets_required_tavily_params(
     assert captured["headers"]["Authorization"] == "Bearer tvly-test"
     assert captured["headers"]["Content-Type"] == "application/json"
     body = captured["body"]
-    assert body["query"] == "elections 2026"
+    # Query is anchored with the current date so Tavily's answer summariser
+    # resolves "today" / "tonight" relative phrases correctly.
+    assert body["query"].startswith("As of ")
+    assert body["query"].endswith(": elections 2026")
     assert body["max_results"] == 5
     assert body["search_depth"] == "advanced"
     assert body["include_answer"] is True
     assert body["include_raw_content"] is False
     assert body["include_images"] is False
+    # time_range omitted when not requested — important so historical
+    # queries aren't filtered out.
+    assert "time_range" not in body
 
 
 @pytest.mark.asyncio
@@ -293,3 +304,82 @@ async def test_base_url_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("web_search._client_for_current_loop", lambda: _CapturingClient())
     await WebSearch()(deps=None, query="x")  # type: ignore[arg-type]
     assert captured["url"] == "https://proxy.example.com/search"
+
+
+# ---------- date anchor ----------
+
+
+def test_anchor_prefixes_query_with_date_and_weekday() -> None:
+    """Anchor must contain ISO date, weekday, and a tz hint so Tavily can resolve 'tonight'."""
+    anchored = _build_anchored_query("Fever vs Mystics tonight")
+    assert "Fever vs Mystics tonight" in anchored
+    assert anchored.startswith("As of ")
+    # ISO-like date prefix.
+    assert re.search(r"\d{4}-\d{2}-\d{2}", anchored)
+    # One of the seven weekdays appears.
+    assert any(
+        day in anchored
+        for day in ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+    )
+
+
+def test_anchor_respects_env_timezone(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(USER_TIMEZONE_ENV, "Asia/Tokyo")
+    anchored = _build_anchored_query("anything")
+    assert "Asia/Tokyo" in anchored
+
+
+def test_anchor_falls_back_on_invalid_timezone(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(USER_TIMEZONE_ENV, "Not/A/Real/Zone")
+    anchored = _build_anchored_query("anything")
+    # Bogus tz must not crash, and the literal name must not leak into the prefix.
+    assert anchored.startswith("As of ")
+    assert "Not/A/Real/Zone" not in anchored
+
+
+# ---------- time_range ----------
+
+
+def test_coerce_time_range_accepts_known_values() -> None:
+    for value in TIME_RANGES:
+        assert _coerce_time_range(value) == value
+        assert _coerce_time_range(value.upper()) == value
+
+
+def test_coerce_time_range_rejects_unknown_returns_empty() -> None:
+    """Empty string signals 'do not forward to Tavily' so historical queries aren't filtered."""
+    assert _coerce_time_range("ages-ago") == ""
+    assert _coerce_time_range(None) == ""
+    assert _coerce_time_range(42) == ""
+    assert _coerce_time_range("") == ""
+
+
+@pytest.mark.asyncio
+async def test_time_range_forwarded_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(TAVILY_API_KEY_ENV, "tvly-test")
+    captured: Dict[str, Any] = {}
+
+    class _CapturingClient:
+        async def post(self, url: str, *, json: Dict[str, Any], **_kw: Any) -> _FakeResp:
+            captured["body"] = json
+            return _FakeResp(200, _tavily_payload(results=[]))
+
+    monkeypatch.setattr("web_search._client_for_current_loop", lambda: _CapturingClient())
+    await WebSearch()(deps=None, query="Fever vs Mystics", time_range="day")  # type: ignore[arg-type]
+    assert captured["body"]["time_range"] == "day"
+
+
+@pytest.mark.asyncio
+async def test_time_range_omitted_when_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Garbage values must NOT end up in the request body."""
+    monkeypatch.setenv(TAVILY_API_KEY_ENV, "tvly-test")
+    captured: Dict[str, Any] = {}
+
+    class _CapturingClient:
+        async def post(self, url: str, *, json: Dict[str, Any], **_kw: Any) -> _FakeResp:
+            captured["body"] = json
+            return _FakeResp(200, _tavily_payload(results=[]))
+
+    monkeypatch.setattr("web_search._client_for_current_loop", lambda: _CapturingClient())
+    await WebSearch()(deps=None, query="x", time_range="forever")  # type: ignore[arg-type]
+    assert "time_range" not in captured["body"]
