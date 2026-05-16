@@ -42,8 +42,8 @@
   <p style="color:#888;margin:0.5rem 0;">API key used by <code>save_memory</code> and <code>recall_memory</code>. Get one at <a href="https://supermemory.ai" target="_blank" rel="noreferrer">supermemory.ai</a>.</p>
   <div id="sm-status" class="sm-status">Checking…</div>
   <label for="sm-key" style="display:block;margin:0.75rem 0 0.25rem;font-weight:600;">API key</label>
-  <div style="display:flex;gap:0.5rem;align-items:stretch;">
-    <input id="sm-key" type="password" autocomplete="off" placeholder="sk-..." style="flex:1;padding:0.5rem;font-size:1rem;box-sizing:border-box;" />
+  <div style="display:flex;flex-direction:column;gap:0.5rem;">
+    <input id="sm-key" type="password" autocomplete="off" placeholder="sk-..." style="width:100%;padding:0.5rem;font-size:1rem;box-sizing:border-box;" />
     <button id="sm-save" style="padding:0.5rem 1rem;font-size:1rem;cursor:pointer;">Save</button>
   </div>
 
@@ -231,8 +231,8 @@
   <p style="color:#888;margin:0.5rem 0;">Tavily API key used by <code>web_search</code>. Get one at <a href="https://tavily.com" target="_blank" rel="noreferrer">tavily.com</a> — free tier covers 1,000 searches/month.</p>
   <div id="tv-status" class="tv-status">Checking…</div>
   <label for="tv-key" style="display:block;margin:0.75rem 0 0.25rem;font-weight:600;">API key</label>
-  <div style="display:flex;gap:0.5rem;align-items:stretch;">
-    <input id="tv-key" type="password" autocomplete="off" placeholder="tvly-..." style="flex:1;padding:0.5rem;font-size:1rem;box-sizing:border-box;" />
+  <div style="display:flex;flex-direction:column;gap:0.5rem;">
+    <input id="tv-key" type="password" autocomplete="off" placeholder="tvly-..." style="width:100%;padding:0.5rem;font-size:1rem;box-sizing:border-box;" />
     <button id="tv-save" style="padding:0.5rem 1rem;font-size:1rem;cursor:pointer;">Save</button>
   </div>
 
@@ -294,8 +294,8 @@
   <p style="color:#888;margin:0.5rem 0;">User's local timezone for the ambient datetime stamp in the prompt and the default for <code>get_current_time</code>. Leave blank to use the system timezone. Use an <a href="https://en.wikipedia.org/wiki/List_of_tz_database_time_zones" target="_blank" rel="noreferrer">IANA name</a> like <code>America/New_York</code>, <code>Europe/Paris</code>, or <code>Africa/Johannesburg</code>.</p>
   <div id="tz-status" class="tz-status">Checking…</div>
   <label for="tz-input" style="display:block;margin:0.75rem 0 0.25rem;font-weight:600;">Timezone</label>
-  <div style="display:flex;gap:0.5rem;align-items:stretch;">
-    <input id="tz-input" type="text" autocomplete="off" placeholder="Africa/Johannesburg" style="flex:1;padding:0.5rem;font-size:1rem;box-sizing:border-box;" />
+  <div style="display:flex;flex-direction:column;gap:0.5rem;">
+    <input id="tz-input" type="text" autocomplete="off" placeholder="Africa/Johannesburg" style="width:100%;padding:0.5rem;font-size:1rem;box-sizing:border-box;" />
     <button id="tz-save" style="padding:0.5rem 1rem;font-size:1rem;cursor:pointer;">Save</button>
   </div>
 
