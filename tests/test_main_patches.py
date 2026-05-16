@@ -287,7 +287,7 @@ def test_apply_all_patches_emits_rollup(
     fake_realtime_modules: dict, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The roll-up line must report how many patches landed."""
-    # Stub the three other upstream surfaces so the patches succeed.
+    # Stub the upstream surfaces the four post-preload patches reach into.
     prompts = types.ModuleType("reachy_mini_conversation_app.prompts")
     prompts.get_session_instructions = lambda: "base"  # type: ignore[attr-defined]
     sys.modules["reachy_mini_conversation_app.prompts"] = prompts
@@ -301,17 +301,85 @@ def test_apply_all_patches_emits_rollup(
     gradio_personality.PersonalityUI = PersonalityUI  # type: ignore[attr-defined]
     sys.modules["reachy_mini_conversation_app.gradio_personality"] = gradio_personality
 
+    headless = types.ModuleType("reachy_mini_conversation_app.headless_personality")
+    headless.available_tools_for = lambda _selected: ["dance", "background_tool_manager"]  # type: ignore[attr-defined]
+    sys.modules["reachy_mini_conversation_app.headless_personality"] = headless
+
     main = _import_main()
     try:
         main.apply_all_patches()
         err = capsys.readouterr().err
         assert "Upstream patches:" in err
-        # VAD + inline-memory + dropdown should land; locked-profile depends
-        # on whether config is in sys.modules (set by the fixture above).
-        assert "/4 applied" in err
+        # 4 of the 5 patches always land in this fixture (locked-profile is
+        # content-conditional and won't fire without a real config module).
+        assert "/5 applied" in err
     finally:
         sys.modules.pop("reachy_mini_conversation_app.prompts", None)
         sys.modules.pop("reachy_mini_conversation_app.gradio_personality", None)
+        sys.modules.pop("reachy_mini_conversation_app.headless_personality", None)
+
+
+def test_available_tools_patch_filters_non_tool_modules() -> None:
+    """available_tools_for must no longer return background_tool_manager / tool_constants."""
+    headless = types.ModuleType("reachy_mini_conversation_app.headless_personality")
+    # Pretend upstream's pre-patch behavior — leaks both non-tool modules.
+    headless.available_tools_for = lambda _selected: [  # type: ignore[attr-defined]
+        "dance",
+        "background_tool_manager",
+        "play_emotion",
+        "tool_constants",
+        "task_status",
+    ]
+    sys.modules["reachy_mini_conversation_app.headless_personality"] = headless
+
+    main = _import_main()
+    try:
+        main._patch_filter_available_tools()
+        # Pull the now-patched function and call it.
+        filtered = sys.modules[
+            "reachy_mini_conversation_app.headless_personality"
+        ].available_tools_for("supermemory")
+        assert "background_tool_manager" not in filtered
+        assert "tool_constants" not in filtered
+        # Real tools survive.
+        assert "dance" in filtered
+        assert "play_emotion" in filtered
+        assert "task_status" in filtered
+    finally:
+        sys.modules.pop("reachy_mini_conversation_app.headless_personality", None)
+
+
+def test_available_tools_patch_is_idempotent() -> None:
+    """Re-running the patch must not double-wrap the function."""
+    headless = types.ModuleType("reachy_mini_conversation_app.headless_personality")
+    headless.available_tools_for = lambda _selected: ["dance", "background_tool_manager"]  # type: ignore[attr-defined]
+    sys.modules["reachy_mini_conversation_app.headless_personality"] = headless
+
+    main = _import_main()
+    try:
+        main._patch_filter_available_tools()
+        first_wrapped = sys.modules[
+            "reachy_mini_conversation_app.headless_personality"
+        ].available_tools_for
+        main._patch_filter_available_tools()
+        assert (
+            sys.modules["reachy_mini_conversation_app.headless_personality"].available_tools_for
+            is first_wrapped
+        )
+    finally:
+        sys.modules.pop("reachy_mini_conversation_app.headless_personality", None)
+
+
+def test_available_tools_patch_warns_when_module_missing(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """If headless_personality is absent, we must surface a startup warning."""
+    sys.modules.pop("reachy_mini_conversation_app.headless_personality", None)
+    main = _import_main()
+    main._patch_filter_available_tools()
+    err = capsys.readouterr().err
+    # Either an import error or a missing-symbol warning — both acceptable.
+    assert "Available-tools patch WARNING" in err
 
 
 def test_vad_patch_warns_when_servervad_missing(

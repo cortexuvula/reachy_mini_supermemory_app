@@ -330,6 +330,60 @@ def _patch_external_profiles_into_dropdown() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Filter non-Tool modules out of the dashboard's "Available tools" list
+# ---------------------------------------------------------------------------
+
+# Modules that live under ``reachy_mini_conversation_app/tools/`` but aren't
+# Tool subclasses. Upstream's ``available_tools_for`` globs the directory and
+# only filters ``__init__`` and ``core_tools`` — the rest leak into the
+# dashboard's checkbox grid as if they were tools the user could enable.
+_NON_TOOL_MODULES = frozenset({"background_tool_manager", "tool_constants"})
+
+
+def _patch_filter_available_tools() -> None:
+    """Hide non-Tool modules from the dashboard's available-tools checklist.
+
+    Upstream's ``headless_personality.available_tools_for(profile)`` enumerates
+    every ``.py`` under ``tools/`` except ``__init__`` and ``core_tools``.
+    That includes ``background_tool_manager.py`` (the manager class) and
+    ``tool_constants.py`` (enums) — neither is a Tool. They appear in the
+    dashboard with checkboxes that don't do anything: enabling them is a
+    no-op (the loader skips non-Tool modules), and the unchecked state reads
+    as "the background tool manager is off" when it isn't (the manager is
+    instantiated unconditionally in the realtime path). Filter them out so
+    the checklist tells the truth.
+    """
+    try:
+        from reachy_mini_conversation_app import headless_personality as _hp
+    except Exception as e:
+        startup_log(
+            f"Available-tools patch WARNING: cannot import headless_personality ({e}); "
+            "background_tool_manager will keep appearing as a misleading checkbox",
+            logger=logger,
+        )
+        return
+
+    original = getattr(_hp, "available_tools_for", None)
+    if original is None:
+        startup_log(
+            "Available-tools patch WARNING: available_tools_for not found in "
+            "headless_personality; background_tool_manager will keep appearing "
+            "as a misleading checkbox",
+            logger=logger,
+        )
+        return
+    if getattr(original, "_supermemory_avail_tools_patched", False):
+        return
+
+    def _filtered_available_tools(selected: str):  # type: ignore[no-untyped-def]
+        names = original(selected)
+        return [n for n in names if n not in _NON_TOOL_MODULES]
+
+    _filtered_available_tools._supermemory_avail_tools_patched = True  # type: ignore[attr-defined]
+    _hp.available_tools_for = _filtered_available_tools
+
+
+# ---------------------------------------------------------------------------
 # Roll-up
 # ---------------------------------------------------------------------------
 
@@ -378,13 +432,21 @@ def _locked_profile_applied() -> bool:
     return "reachy_mini_conversation_app.config" in sys.modules
 
 
+def _available_tools_applied() -> bool:
+    try:
+        from reachy_mini_conversation_app import headless_personality as _hp
+    except Exception:
+        return False
+    return bool(getattr(getattr(_hp, "available_tools_for", None), "_supermemory_avail_tools_patched", False))
+
+
 def apply_all_patches() -> None:
-    """Run the four upstream patches in dependency order, then emit a roll-up.
+    """Run the five upstream patches in dependency order, then emit a roll-up.
 
     Order matters: ``_preload_unlocked_upstream_config`` must run BEFORE any
     other import of ``reachy_mini_conversation_app.config`` (it swaps the
     module entry in ``sys.modules`` and so only works pre-import). The other
-    three are commutative.
+    four are commutative.
 
     The roll-up uses the per-patch marker attributes to verify which patches
     actually landed against the running upstream; this is the operator-facing
@@ -395,12 +457,14 @@ def apply_all_patches() -> None:
     _patch_realtime_vad_defaults()
     _patch_inline_memory_into_prompt()
     _patch_external_profiles_into_dropdown()
+    _patch_filter_available_tools()
 
     checks = (
         ("locked-profile", _locked_profile_applied()),
         ("vad-defaults", _vad_applied()),
         ("inline-memory", _inline_memory_applied()),
         ("personality-dropdown", _dropdown_applied()),
+        ("available-tools-filter", _available_tools_applied()),
     )
     applied = [name for name, ok in checks if ok]
     failed = [name for name, ok in checks if not ok]
