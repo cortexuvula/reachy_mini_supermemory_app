@@ -483,6 +483,133 @@ def _patch_filter_available_tools() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Realtime emit() hook for one-shot reminders
+# ---------------------------------------------------------------------------
+
+
+def _patch_realtime_emit_with_reminders() -> None:
+    """Wrap ``BaseRealtime.emit`` to fire any due reminders mid-session.
+
+    ``emit`` is the fastrtc per-audio-frame tick — it already runs an idle
+    check inline. We piggyback on the same hook to peek the reminders
+    store; when a reminder is due, idle, and the session is connected,
+    inject a synthesised user message via the same ``conversation.item.create``
+    + ``response.create`` mechanism upstream uses for idle signals.
+
+    The check is cheap (atomic JSON peek + datetime compare) so the
+    per-tick cost is negligible. ``pop_first_due()`` atomically claims
+    the entry so a concurrent tick can't double-fire.
+    """
+    try:
+        from reachy_mini_conversation_app import base_realtime as _br
+    except Exception as e:
+        startup_log(
+            f"Reminders patch WARNING: cannot import base_realtime ({e}); "
+            "scheduled reminders will not fire mid-session",
+            logger=logger,
+        )
+        return
+
+    cls = getattr(_br, "BaseRealtime", None)
+    if cls is None:
+        startup_log(
+            "Reminders patch WARNING: BaseRealtime class not found; "
+            "scheduled reminders will not fire mid-session",
+            logger=logger,
+        )
+        return
+    original = getattr(cls, "emit", None)
+    if original is None:
+        startup_log(
+            "Reminders patch WARNING: BaseRealtime.emit not found; "
+            "scheduled reminders will not fire mid-session",
+            logger=logger,
+        )
+        return
+    if getattr(original, "_supermemory_reminders_patched", False):
+        return
+
+    async def _emit_with_reminder_check(self: Any, *args: Any, **kwargs: Any) -> Any:
+        # Peek-and-fire BEFORE the original emit runs. The original handles
+        # idle signalling + output queue draining; our check is additive.
+        try:
+            await _maybe_fire_reminder(self)
+        except Exception as e:
+            logger.warning("Reminder check failed: %s", e)
+        return await original(self, *args, **kwargs)
+
+    _emit_with_reminder_check._supermemory_reminders_patched = True  # type: ignore[attr-defined]
+    cls.emit = _emit_with_reminder_check
+
+
+async def _maybe_fire_reminder(realtime_instance: Any) -> None:
+    """Inject one due reminder into the live session, if it's safe to do so.
+
+    Safety gates (in order, cheapest first):
+      1. Session has a live ``connection`` (skip if disconnected).
+      2. ``_response_done_event`` is set (don't interrupt a response).
+      3. Privacy mode is not active (don't speak during privacy).
+      4. There's actually a due reminder.
+    """
+    if not getattr(realtime_instance, "connection", None):
+        return
+    done_event = getattr(realtime_instance, "_response_done_event", None)
+    if done_event is not None and not done_event.is_set():
+        return
+
+    try:
+        from ._privacy_mode import is_privacy_active
+
+        if is_privacy_active():
+            return
+    except Exception:
+        # If the privacy module isn't importable, don't block reminders.
+        pass
+
+    from ._reminders import pop_first_due
+
+    reminder = pop_first_due()
+    if reminder is None:
+        return
+
+    text = reminder.get("text") or "(no text)"
+    fire_at = reminder.get("fire_at") or ""
+    message = (
+        f"[Reminder fired at {fire_at}] You scheduled this earlier: "
+        f'"{text}". Tell the user about it now in your own voice.'
+    )
+
+    try:
+        await realtime_instance.connection.conversation.item.create(
+            item={
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": message}],
+            }
+        )
+        # Use the upstream-provided safe response trigger so we honour
+        # the "is_response_in_flight" guard upstream maintains.
+        await realtime_instance._safe_response_create()
+        logger.info(
+            "Reminder fired: id=%s fire_at=%s text=%r",
+            reminder.get("id"),
+            fire_at,
+            text,
+        )
+    except Exception as e:
+        # The reminder is already marked FIRED by pop_first_due; if injection
+        # fails we lose the speech, but the entry is preserved in the store
+        # with a "fired" status so list_reminders shows it. Log so an
+        # operator can investigate.
+        logger.warning(
+            "Reminder %s injection failed (text=%r): %s",
+            reminder.get("id"),
+            text,
+            e,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Roll-up
 # ---------------------------------------------------------------------------
 
@@ -578,8 +705,16 @@ def _unwrap(fn):  # type: ignore[no-untyped-def]
     return None
 
 
+def _reminders_applied() -> bool:
+    try:
+        from reachy_mini_conversation_app import base_realtime as _br
+    except Exception:
+        return False
+    return bool(getattr(getattr(_br.BaseRealtime, "emit", None), "_supermemory_reminders_patched", False))
+
+
 def apply_all_patches() -> None:
-    """Run the six upstream patches in dependency order, then emit a roll-up.
+    """Run the seven upstream patches in dependency order, then emit a roll-up.
 
     Order matters: ``_preload_unlocked_upstream_config`` must run BEFORE any
     other import of ``reachy_mini_conversation_app.config`` (it swaps the
@@ -600,6 +735,7 @@ def apply_all_patches() -> None:
     _patch_datetime_into_prompt()
     _patch_external_profiles_into_dropdown()
     _patch_filter_available_tools()
+    _patch_realtime_emit_with_reminders()
 
     checks = (
         ("locked-profile", _locked_profile_applied()),
@@ -608,6 +744,7 @@ def apply_all_patches() -> None:
         ("datetime", _datetime_applied()),
         ("personality-dropdown", _dropdown_applied()),
         ("available-tools-filter", _available_tools_applied()),
+        ("reminders-emit-hook", _reminders_applied()),
     )
     applied = [name for name, ok in checks if ok]
     failed = [name for name, ok in checks if not ok]

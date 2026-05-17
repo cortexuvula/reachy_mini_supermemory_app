@@ -11,6 +11,9 @@ recall_memory
 manage_memory
 web_search
 get_current_time
+add_reminder
+list_reminders
+cancel_reminder
 # task_status and task_cancel are auto-injected by upstream's loader
 # (tools/core_tools.py:188 — SystemTool enum) so they don't need to be listed
 # here. The instructions.txt "Background tasks" section still teaches the

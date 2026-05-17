@@ -305,18 +305,29 @@ def test_apply_all_patches_emits_rollup(
     headless.available_tools_for = lambda _selected: ["dance", "background_tool_manager"]  # type: ignore[attr-defined]
     sys.modules["reachy_mini_conversation_app.headless_personality"] = headless
 
+    # Stub the realtime module too so the reminders-emit patch lands in the rollup.
+    base_realtime = types.ModuleType("reachy_mini_conversation_app.base_realtime")
+
+    class _FakeRealtime:
+        async def emit(self, *a, **kw):  # type: ignore[no-untyped-def]
+            return None
+
+    base_realtime.BaseRealtime = _FakeRealtime  # type: ignore[attr-defined]
+    sys.modules["reachy_mini_conversation_app.base_realtime"] = base_realtime
+
     main = _import_main()
     try:
         main.apply_all_patches()
         err = capsys.readouterr().err
         assert "Upstream patches:" in err
-        # 5 of the 6 patches always land in this fixture (locked-profile is
+        # 6 of the 7 patches always land in this fixture (locked-profile is
         # content-conditional and won't fire without a real config module).
-        assert "/6 applied" in err
+        assert "/7 applied" in err
     finally:
         sys.modules.pop("reachy_mini_conversation_app.prompts", None)
         sys.modules.pop("reachy_mini_conversation_app.gradio_personality", None)
         sys.modules.pop("reachy_mini_conversation_app.headless_personality", None)
+        sys.modules.pop("reachy_mini_conversation_app.base_realtime", None)
 
 
 def test_available_tools_patch_filters_non_tool_modules() -> None:
@@ -473,6 +484,251 @@ def test_datetime_and_inline_memory_compose_in_either_order(
     assert "<<CURRENT_DATETIME>>" not in rendered
     assert "<<INLINE_MEMORY>>" not in rendered
     assert "Current date and time:" in rendered
+
+
+# ============================================================================
+# _patch_realtime_emit_with_reminders
+# ============================================================================
+
+
+@pytest.fixture
+def fake_base_realtime():
+    """Stub upstream base_realtime so the emit patch has something to wrap."""
+    saved = sys.modules.get("reachy_mini_conversation_app.base_realtime")
+    mod = types.ModuleType("reachy_mini_conversation_app.base_realtime")
+
+    class _Fake:
+        async def emit(self, *a, **kw):  # type: ignore[no-untyped-def]
+            return "original-emit-result"
+
+    mod.BaseRealtime = _Fake  # type: ignore[attr-defined]
+    sys.modules["reachy_mini_conversation_app.base_realtime"] = mod
+    yield mod
+    sys.modules.pop("reachy_mini_conversation_app.base_realtime", None)
+    if saved is not None:
+        sys.modules["reachy_mini_conversation_app.base_realtime"] = saved
+
+
+def test_reminders_patch_wraps_emit(fake_base_realtime: Any) -> None:
+    """After patching, emit gains the marker attribute."""
+    main = _import_main()
+    main._patch_realtime_emit_with_reminders()
+    assert getattr(fake_base_realtime.BaseRealtime.emit, "_supermemory_reminders_patched", False)
+
+
+def test_reminders_patch_is_idempotent(fake_base_realtime: Any) -> None:
+    main = _import_main()
+    main._patch_realtime_emit_with_reminders()
+    first = fake_base_realtime.BaseRealtime.emit
+    main._patch_realtime_emit_with_reminders()
+    assert fake_base_realtime.BaseRealtime.emit is first
+
+
+def test_reminders_patch_warns_when_module_missing(capsys: pytest.CaptureFixture[str]) -> None:
+    sys.modules.pop("reachy_mini_conversation_app.base_realtime", None)
+    main = _import_main()
+    main._patch_realtime_emit_with_reminders()
+    err = capsys.readouterr().err
+    assert "Reminders patch WARNING" in err
+
+
+@pytest.mark.asyncio
+async def test_patched_emit_fires_due_reminder(
+    fake_base_realtime: Any, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When a reminder is due and the session is idle, the patched emit injects it."""
+    import asyncio
+    import datetime
+    import json as _json
+
+    from reachy_mini_supermemory_app import _reminders as r
+
+    store_path = tmp_path / "reminders.json"
+    monkeypatch.setenv(r.REMINDERS_FILE_ENV, str(store_path))
+    past = (
+        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=10)
+    ).isoformat()
+    store_path.parent.mkdir(parents=True, exist_ok=True)
+    store_path.write_text(
+        _json.dumps(
+            {
+                "entries": [
+                    {
+                        "id": "p1",
+                        "text": "call mom",
+                        "fire_at": past,
+                        "status": r.STATUS_PENDING,
+                        "created_at": past,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    # Wire up a fake realtime instance with the minimal interface the patch needs.
+    injected: list[dict] = []
+    response_created: list[bool] = []
+
+    class _FakeItem:
+        async def create(self, *, item: dict) -> None:
+            injected.append(item)
+
+    class _FakeConversation:
+        item = _FakeItem()
+
+    class _FakeConnection:
+        conversation = _FakeConversation()
+
+    class _Instance:
+        connection = _FakeConnection()
+        _response_done_event = asyncio.Event()
+
+        async def emit(self, *a, **kw):  # original; will be wrapped
+            return "ok"
+
+        async def _safe_response_create(self, *a, **kw):  # type: ignore[no-untyped-def]
+            response_created.append(True)
+
+    _Instance._response_done_event.set()  # idle
+    fake_base_realtime.BaseRealtime = _Instance  # type: ignore[attr-defined]
+
+    main = _import_main()
+    main._patch_realtime_emit_with_reminders()
+
+    instance = _Instance()
+    result = await instance.emit()
+    assert result == "ok"  # original return surfaced
+    assert len(injected) == 1
+    assert "call mom" in injected[0]["content"][0]["text"]
+    assert response_created == [True]
+    # And the reminder is now marked fired in the store.
+    on_disk = _json.loads(store_path.read_text())
+    assert on_disk["entries"][0]["status"] == r.STATUS_FIRED
+
+
+@pytest.mark.asyncio
+async def test_patched_emit_skips_when_response_in_flight(
+    fake_base_realtime: Any, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Don't interrupt the model mid-response — reminder waits for the next idle tick."""
+    import asyncio
+    import datetime
+    import json as _json
+
+    from reachy_mini_supermemory_app import _reminders as r
+
+    store_path = tmp_path / "reminders.json"
+    monkeypatch.setenv(r.REMINDERS_FILE_ENV, str(store_path))
+    past = (
+        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=10)
+    ).isoformat()
+    store_path.parent.mkdir(parents=True, exist_ok=True)
+    store_path.write_text(
+        _json.dumps(
+            {
+                "entries": [
+                    {"id": "p1", "text": "x", "fire_at": past, "status": r.STATUS_PENDING, "created_at": past}
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    injected: list[dict] = []
+
+    class _FakeItem:
+        async def create(self, *, item: dict) -> None:
+            injected.append(item)
+
+    class _FakeConnection:
+        conversation = type("c", (), {"item": _FakeItem()})()
+
+    class _Instance:
+        connection = _FakeConnection()
+        _response_done_event = asyncio.Event()
+        # done_event NOT set → response is in flight
+
+        async def emit(self, *a, **kw):
+            return "ok"
+
+        async def _safe_response_create(self):
+            pass
+
+    fake_base_realtime.BaseRealtime = _Instance  # type: ignore[attr-defined]
+
+    main = _import_main()
+    main._patch_realtime_emit_with_reminders()
+    await _Instance().emit()
+    assert injected == []
+    # Reminder is STILL pending — we didn't claim it.
+    on_disk = _json.loads(store_path.read_text())
+    assert on_disk["entries"][0]["status"] == r.STATUS_PENDING
+
+
+@pytest.mark.asyncio
+async def test_patched_emit_skips_when_no_connection(
+    fake_base_realtime: Any, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Don't try to inject when the session isn't connected."""
+    import asyncio
+    import datetime
+    import json as _json
+
+    from reachy_mini_supermemory_app import _reminders as r
+
+    store_path = tmp_path / "reminders.json"
+    monkeypatch.setenv(r.REMINDERS_FILE_ENV, str(store_path))
+    past = (
+        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=10)
+    ).isoformat()
+    store_path.parent.mkdir(parents=True, exist_ok=True)
+    store_path.write_text(
+        _json.dumps(
+            {
+                "entries": [
+                    {"id": "p1", "text": "x", "fire_at": past, "status": r.STATUS_PENDING, "created_at": past}
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class _Instance:
+        connection = None  # not connected
+        _response_done_event = asyncio.Event()
+
+        async def emit(self, *a, **kw):
+            return "ok"
+
+        async def _safe_response_create(self):
+            pass
+
+    _Instance._response_done_event.set()
+    fake_base_realtime.BaseRealtime = _Instance  # type: ignore[attr-defined]
+
+    main = _import_main()
+    main._patch_realtime_emit_with_reminders()
+    await _Instance().emit()
+    # Reminder NOT claimed — still pending.
+    on_disk = _json.loads(store_path.read_text())
+    assert on_disk["entries"][0]["status"] == r.STATUS_PENDING
+
+
+def test_reminders_patch_in_rollup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """apply_all_patches now reports a 7th patch."""
+    # Lazy import to be sure we get the freshly-patched _patches module.
+    from reachy_mini_supermemory_app import _patches
+
+    assert hasattr(_patches, "_patch_realtime_emit_with_reminders")
+    # The rollup line in apply_all_patches references "reminders-emit-hook".
+    import inspect
+
+    src = inspect.getsource(_patches.apply_all_patches)
+    assert "reminders-emit-hook" in src
+    assert "/7 applied" not in src  # the literal text isn't in source; check structure
+    # The number of "checks = (...) items" should be 7.
+    assert src.count("(\"") == 7  # noqa: B015 — sanity heuristic on the checks tuple
 
 
 def test_vad_patch_warns_when_servervad_missing(

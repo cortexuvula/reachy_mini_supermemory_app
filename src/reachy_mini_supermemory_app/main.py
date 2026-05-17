@@ -84,6 +84,7 @@ from ._patches import (
     _patch_external_profiles_into_dropdown,
     _patch_filter_available_tools,
     _patch_inline_memory_into_prompt,
+    _patch_realtime_emit_with_reminders,
     _patch_realtime_vad_defaults,
     _preload_unlocked_upstream_config,
 )
