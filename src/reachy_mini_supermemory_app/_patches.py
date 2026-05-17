@@ -488,7 +488,7 @@ def _patch_filter_available_tools() -> None:
 
 
 def _patch_realtime_emit_with_reminders() -> None:
-    """Wrap ``BaseRealtime.emit`` to fire any due reminders mid-session.
+    """Wrap ``BaseRealtimeHandler.emit`` to fire any due reminders mid-session.
 
     ``emit`` is the fastrtc per-audio-frame tick — it already runs an idle
     check inline. We piggyback on the same hook to peek the reminders
@@ -510,10 +510,10 @@ def _patch_realtime_emit_with_reminders() -> None:
         )
         return
 
-    cls = getattr(_br, "BaseRealtime", None)
+    cls = getattr(_br, "BaseRealtimeHandler", None)
     if cls is None:
         startup_log(
-            "Reminders patch WARNING: BaseRealtime class not found; "
+            "Reminders patch WARNING: BaseRealtimeHandler class not found; "
             "scheduled reminders will not fire mid-session",
             logger=logger,
         )
@@ -521,7 +521,7 @@ def _patch_realtime_emit_with_reminders() -> None:
     original = getattr(cls, "emit", None)
     if original is None:
         startup_log(
-            "Reminders patch WARNING: BaseRealtime.emit not found; "
+            "Reminders patch WARNING: BaseRealtimeHandler.emit not found; "
             "scheduled reminders will not fire mid-session",
             logger=logger,
         )
@@ -706,11 +706,23 @@ def _unwrap(fn):  # type: ignore[no-untyped-def]
 
 
 def _reminders_applied() -> bool:
+    """Defensive probe — must not raise even if the upstream class moved/renamed.
+
+    The previous version did ``_br.BaseRealtimeHandler.emit`` directly, which
+    AttributeError'd on the deployed robot (a different upstream version with
+    no such symbol) and crashed apply_all_patches mid-rollup, masking every
+    other patch. All probes must tolerate missing attributes; failure here
+    just means "not applied" — the warning from the patch itself already
+    explained why.
+    """
     try:
         from reachy_mini_conversation_app import base_realtime as _br
     except Exception:
         return False
-    return bool(getattr(getattr(_br.BaseRealtime, "emit", None), "_supermemory_reminders_patched", False))
+    cls = getattr(_br, "BaseRealtimeHandler", None)
+    if cls is None:
+        return False
+    return bool(getattr(getattr(cls, "emit", None), "_supermemory_reminders_patched", False))
 
 
 def apply_all_patches() -> None:

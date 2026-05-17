@@ -312,7 +312,7 @@ def test_apply_all_patches_emits_rollup(
         async def emit(self, *a, **kw):  # type: ignore[no-untyped-def]
             return None
 
-    base_realtime.BaseRealtime = _FakeRealtime  # type: ignore[attr-defined]
+    base_realtime.BaseRealtimeHandler = _FakeRealtime  # type: ignore[attr-defined]
     sys.modules["reachy_mini_conversation_app.base_realtime"] = base_realtime
 
     main = _import_main()
@@ -501,7 +501,7 @@ def fake_base_realtime():
         async def emit(self, *a, **kw):  # type: ignore[no-untyped-def]
             return "original-emit-result"
 
-    mod.BaseRealtime = _Fake  # type: ignore[attr-defined]
+    mod.BaseRealtimeHandler = _Fake  # type: ignore[attr-defined]
     sys.modules["reachy_mini_conversation_app.base_realtime"] = mod
     yield mod
     sys.modules.pop("reachy_mini_conversation_app.base_realtime", None)
@@ -513,15 +513,15 @@ def test_reminders_patch_wraps_emit(fake_base_realtime: Any) -> None:
     """After patching, emit gains the marker attribute."""
     main = _import_main()
     main._patch_realtime_emit_with_reminders()
-    assert getattr(fake_base_realtime.BaseRealtime.emit, "_supermemory_reminders_patched", False)
+    assert getattr(fake_base_realtime.BaseRealtimeHandler.emit, "_supermemory_reminders_patched", False)
 
 
 def test_reminders_patch_is_idempotent(fake_base_realtime: Any) -> None:
     main = _import_main()
     main._patch_realtime_emit_with_reminders()
-    first = fake_base_realtime.BaseRealtime.emit
+    first = fake_base_realtime.BaseRealtimeHandler.emit
     main._patch_realtime_emit_with_reminders()
-    assert fake_base_realtime.BaseRealtime.emit is first
+    assert fake_base_realtime.BaseRealtimeHandler.emit is first
 
 
 def test_reminders_patch_warns_when_module_missing(capsys: pytest.CaptureFixture[str]) -> None:
@@ -591,7 +591,7 @@ async def test_patched_emit_fires_due_reminder(
             response_created.append(True)
 
     _Instance._response_done_event.set()  # idle
-    fake_base_realtime.BaseRealtime = _Instance  # type: ignore[attr-defined]
+    fake_base_realtime.BaseRealtimeHandler = _Instance  # type: ignore[attr-defined]
 
     main = _import_main()
     main._patch_realtime_emit_with_reminders()
@@ -655,7 +655,7 @@ async def test_patched_emit_skips_when_response_in_flight(
         async def _safe_response_create(self):
             pass
 
-    fake_base_realtime.BaseRealtime = _Instance  # type: ignore[attr-defined]
+    fake_base_realtime.BaseRealtimeHandler = _Instance  # type: ignore[attr-defined]
 
     main = _import_main()
     main._patch_realtime_emit_with_reminders()
@@ -705,7 +705,7 @@ async def test_patched_emit_skips_when_no_connection(
             pass
 
     _Instance._response_done_event.set()
-    fake_base_realtime.BaseRealtime = _Instance  # type: ignore[attr-defined]
+    fake_base_realtime.BaseRealtimeHandler = _Instance  # type: ignore[attr-defined]
 
     main = _import_main()
     main._patch_realtime_emit_with_reminders()
