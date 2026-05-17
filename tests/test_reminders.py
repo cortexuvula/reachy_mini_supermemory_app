@@ -70,22 +70,62 @@ def test_add_rejects_blank_text(store_path: Path) -> None:
     assert "error" in r.add("   ", _iso(60))
 
 
-def test_add_rejects_bad_iso(store_path: Path) -> None:
-    result = r.add("anything", "not iso")
+def test_add_rejects_no_time_args(store_path: Path) -> None:
+    """Neither in_seconds nor when_iso → clear error."""
+    result = r.add("anything")
     assert "error" in result
-    assert "ISO" in result["error"]
+    assert "in_seconds" in result["error"] or "when_iso" in result["error"]
+
+
+def test_add_rejects_bad_iso(store_path: Path) -> None:
+    result = r.add("anything", when_iso="not iso")
+    assert "error" in result
 
 
 def test_add_rejects_past_time(store_path: Path) -> None:
-    result = r.add("anything", _iso(-60))
+    result = r.add("anything", when_iso=_iso(-60))
     assert "error" in result
     assert "future" in result["error"]
 
 
 def test_add_assigns_unique_ids(store_path: Path) -> None:
-    a = r.add("first", _iso(60))
-    b = r.add("second", _iso(120))
+    a = r.add("first", when_iso=_iso(60))
+    b = r.add("second", when_iso=_iso(120))
     assert a["id"] != b["id"]
+
+
+# ---------- relative-time path ----------
+
+
+def test_add_with_in_seconds_resolves_against_wall_clock(store_path: Path) -> None:
+    """The trustworthy path — model just says '60' for 'in one minute'."""
+    before = datetime.datetime.now(datetime.timezone.utc)
+    result = r.add("call mom", in_seconds=60)
+    assert "error" not in result
+    fire_at = datetime.datetime.fromisoformat(result["fire_at"])
+    delta = (fire_at - before).total_seconds()
+    # Should be ~60s; allow 5s tolerance for test slowness.
+    assert 55 < delta < 65
+
+
+def test_add_in_seconds_rejects_zero_and_negative(store_path: Path) -> None:
+    assert "error" in r.add("x", in_seconds=0)
+    assert "error" in r.add("x", in_seconds=-30)
+
+
+def test_add_in_seconds_rejects_non_int(store_path: Path) -> None:
+    """The model might emit a string. Reject cleanly."""
+    assert "error" in r.add("x", in_seconds="sixty")  # type: ignore[arg-type]
+
+
+def test_in_seconds_takes_precedence_when_both_supplied(store_path: Path) -> None:
+    """If the model accidentally passes both, the trustworthy path wins."""
+    far_future_iso = _iso(99999)
+    result = r.add("x", when_iso=far_future_iso, in_seconds=60)
+    assert "error" not in result
+    fire_at = datetime.datetime.fromisoformat(result["fire_at"])
+    delta = (fire_at - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
+    assert delta < 120  # ≈ 60s, not the far-future ISO
 
 
 # ---------- list_all ----------

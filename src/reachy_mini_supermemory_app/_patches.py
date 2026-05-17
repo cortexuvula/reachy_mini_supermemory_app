@@ -228,6 +228,33 @@ def _preload_unlocked_upstream_config() -> None:
 CURRENT_DATETIME_PLACEHOLDER = "<<CURRENT_DATETIME>>"
 USER_TIMEZONE_ENV = "SUPERMEMORY_USER_TIMEZONE"
 
+# Realtime backend modules that do ``from reachy_mini_conversation_app.prompts
+# import get_session_instructions`` at top-level. After we patch the function
+# on the ``prompts`` module, those modules' LOCAL references still point at
+# whichever object existed at their import time. If they were already imported
+# before our patch ran, calls go to the original — substitutions are silently
+# skipped, the model gets a placeholder-laced prompt, and we waste hours
+# debugging "the date isn't reaching the model".
+#
+# So after patching, we also rebind the local name in any of these modules
+# that have already loaded. Modules that load LATER pick up the wrapper via
+# their `from ... import` automatically.
+_REALTIME_BACKENDS = (
+    "reachy_mini_conversation_app.huggingface_realtime",
+    "reachy_mini_conversation_app.openai_realtime",
+    "reachy_mini_conversation_app.gemini_live",
+)
+
+
+def _rebind_get_session_instructions(new_fn: Any) -> None:
+    """Update local ``get_session_instructions`` references in realtime backends."""
+    for module_name in _REALTIME_BACKENDS:
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        if hasattr(module, "get_session_instructions"):
+            module.get_session_instructions = new_fn
+
 
 def _render_current_datetime() -> str:
     """Build the human-readable datetime string injected at session start.
@@ -318,6 +345,10 @@ def _patch_datetime_into_prompt() -> None:
 
     _with_datetime._supermemory_datetime_patched = True  # type: ignore[attr-defined]
     _prompts.get_session_instructions = _with_datetime
+    # Realtime backends do `from prompts import get_session_instructions` at
+    # module load; bare module-attribute patching misses their local refs if
+    # they imported before us. Rebind defensively.
+    _rebind_get_session_instructions(_with_datetime)
 
 
 # ---------------------------------------------------------------------------
@@ -373,6 +404,10 @@ def _patch_inline_memory_into_prompt() -> None:
 
     _with_inline_memory._supermemory_inline_patched = True  # type: ignore[attr-defined]
     _prompts.get_session_instructions = _with_inline_memory
+    # See note in _patch_datetime_into_prompt — realtime backends bind a local
+    # reference at their `from prompts import …` line; we have to update those
+    # too, otherwise the inline memory block never reaches the model.
+    _rebind_get_session_instructions(_with_inline_memory)
 
 
 # ---------------------------------------------------------------------------

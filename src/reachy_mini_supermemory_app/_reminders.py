@@ -124,18 +124,49 @@ def _gc(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-def add(text: str, when_iso: str) -> Dict[str, Any]:
-    """Schedule a new reminder. Returns the stored entry or ``{"error": ...}``."""
+def add(
+    text: str,
+    when_iso: Optional[str] = None,
+    in_seconds: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Schedule a new reminder.
+
+    Accepts EITHER an absolute ISO 8601 datetime (``when_iso``) OR a relative
+    second offset (``in_seconds``). Relative offsets are resolved against the
+    server's wall clock — the model just translates "in 1 minute" to ``60``
+    and we do the arithmetic. This is the trustworthy path; voice models tend
+    to hallucinate "now" when computing ISO timestamps from a prompt stamp.
+
+    When both are supplied, ``in_seconds`` wins and ``when_iso`` is ignored.
+
+    Returns the stored entry or ``{"error": ...}``.
+    """
     text = (text or "").strip()
     if not text:
         return {"error": "text is required"}
-    fire_at = _parse_iso(when_iso or "")
-    if fire_at is None:
-        return {"error": f"when_iso is not a valid ISO 8601 datetime: {when_iso!r}"}
-    # Naive past-time check — refuse explicitly so the model gets a clear
-    # error instead of a silently-fired reminder.
-    if fire_at <= _now_utc():
-        return {"error": "when_iso must be in the future"}
+
+    if in_seconds is not None:
+        try:
+            seconds = int(in_seconds)
+        except (TypeError, ValueError):
+            return {"error": f"in_seconds is not an integer: {in_seconds!r}"}
+        if seconds <= 0:
+            return {"error": "in_seconds must be positive"}
+        fire_at = _now_utc() + datetime.timedelta(seconds=seconds)
+    else:
+        fire_at_parsed = _parse_iso(when_iso or "")
+        if fire_at_parsed is None:
+            return {
+                "error": (
+                    "either in_seconds (positive integer) or when_iso "
+                    "(valid ISO 8601 datetime) is required"
+                )
+            }
+        # Naive past-time check — refuse explicitly so the model gets a clear
+        # error instead of a silently-fired reminder.
+        if fire_at_parsed <= _now_utc():
+            return {"error": "when_iso must be in the future"}
+        fire_at = fire_at_parsed
 
     entry: Dict[str, Any] = {
         "id": _new_id(),

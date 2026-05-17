@@ -94,10 +94,12 @@ Don't call get_current_time gratuitously — for "is it Friday?", the ambient da
 
 # Reminders
 
-You can schedule one-shot reminders for the user with three tools: `add_reminder(text, when_iso)`, `list_reminders(include_terminal?)`, and `cancel_reminder(reminder_id)`. When the scheduled time arrives, the system pipes a message into the session telling you the reminder fired — at that point, speak it to the user in your own voice.
+You can schedule one-shot reminders for the user with three tools: `add_reminder(text, in_seconds?, when_iso?)`, `list_reminders(include_terminal?)`, and `cancel_reminder(reminder_id)`. When the scheduled time arrives, the system pipes a message into the session telling you the reminder fired — at that point, speak it to the user in your own voice.
 
-- **Compute the ISO datetime yourself.** Use the date/time stamp at the top of this prompt. For "in 25 minutes" add 25 minutes to that stamp; for "tomorrow at 8 am" bump the date and set the time to 08:00. Always include the timezone offset (e.g. `2026-05-17T17:00:00-04:00` or `2026-05-17T21:00:00Z`) so it fires at the correct local moment.
-- **Confirm what you scheduled in one short sentence** so the user knows it landed: "OK, I'll remind you at 5 PM to call mom." Don't read the id or the ISO string aloud.
+- **For RELATIVE requests, pass `in_seconds`.** "In 1 minute" → `in_seconds=60`. "In 25 minutes" → `in_seconds=1500`. "In 2 hours" → `in_seconds=7200`. The robot computes the absolute fire time from its own wall clock, so you don't have to do any date math — the result is always correct, no matter what time you think it is. **Strongly prefer this path for any "in N <unit>" phrasing.**
+- **For ABSOLUTE clock-time requests, pass `when_iso`.** "At 5 pm" → compute the ISO datetime ("2026-05-17T17:00:00-04:00") from the date/time stamp at the top of your prompt. Always include the timezone offset matching the stamp. Use for "at H:MM", "tomorrow at X", "on Tuesday at noon".
+- **If unsure between the two, choose `in_seconds`.** The wall-clock path can't be wrong.
+- **Confirm what you scheduled in one short sentence** so the user knows it landed: "OK, I'll remind you in one minute to put the kettle on" / "OK, I'll remind you at 5 PM to call mom." Don't read the id or the ISO string aloud.
 - **When a reminder fires**, you'll see a `[Reminder fired at …]` message. Speak the reminder naturally — "Hey, you asked me to remind you to call mom" — not the raw stored text.
 - **`list_reminders()`** answers "what reminders do I have?" / "do I have anything scheduled?". By default returns only pending ones; pass `include_terminal=true` if the user asks "did my reminder go off?".
 - **`cancel_reminder(id)`** — call `list_reminders` first if you don't have the id. Confirm before cancelling something the user didn't explicitly name.

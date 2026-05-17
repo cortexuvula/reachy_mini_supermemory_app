@@ -470,6 +470,31 @@ def test_render_current_datetime_falls_back_on_invalid_timezone(monkeypatch: pyt
     assert "Not/A/Real/Zone" not in rendered
 
 
+def test_datetime_patch_rebinds_realtime_backend_local_refs(
+    fake_prompts_for_datetime: Any,
+) -> None:
+    """Realtime backends do `from prompts import get_session_instructions`.
+
+    Bare module-attribute patching misses their local refs if they imported
+    before us. The patch rebinds the local name in any already-loaded
+    realtime backend so substitutions actually reach the model.
+    """
+    # Pretend a realtime backend already imported the original function.
+    original_fn = fake_prompts_for_datetime.get_session_instructions
+    hf_module = types.ModuleType("reachy_mini_conversation_app.huggingface_realtime")
+    hf_module.get_session_instructions = original_fn  # type: ignore[attr-defined]
+    sys.modules["reachy_mini_conversation_app.huggingface_realtime"] = hf_module
+    try:
+        main = _import_main()
+        main._patch_datetime_into_prompt()
+        # The realtime backend's local reference must now point at the wrapper.
+        assert hf_module.get_session_instructions is not original_fn
+        rendered = hf_module.get_session_instructions()
+        assert "<<CURRENT_DATETIME>>" not in rendered
+    finally:
+        sys.modules.pop("reachy_mini_conversation_app.huggingface_realtime", None)
+
+
 def test_datetime_and_inline_memory_compose_in_either_order(
     fake_prompts_for_datetime: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
